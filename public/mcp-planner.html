@@ -122,6 +122,7 @@
       pt: {
         title: 'Pré-visualização da planta', waiting: 'A aguardar o projeto.', level: 'Piso', image: 'Planta do piso',
         layer: 'Camada', architecture: 'Arquitetura',
+        routeFloor: 'Pavimento', routeCeiling: 'Teto',
         slab: 'Laje', slabAuto: 'Laje automática', slabCustom: 'Laje desenhada', noSlab: 'Sem laje neste piso.',
         construction: 'Plano de obra', critical: 'Caminho crítico das dependências',
         scheduleSummary: (days, saved) => `${days} dias úteis · ${saved} dias úteis ganhos face à sequência`,
@@ -136,6 +137,7 @@
       en: {
         title: 'Floor plan preview', waiting: 'Waiting for the project.', level: 'Storey', image: 'Floor plan',
         layer: 'Layer', architecture: 'Architecture',
+        routeFloor: 'Floor', routeCeiling: 'Ceiling',
         slab: 'Slab', slabAuto: 'Automatic slab', slabCustom: 'Custom slab', noSlab: 'No slab on this storey.',
         construction: 'Construction programme', critical: 'Dependency critical path',
         scheduleSummary: (days, saved) => `${days} workdays · ${saved} workdays saved against sequential work`,
@@ -239,7 +241,7 @@
       const nodes = Array.isArray(network?.nodes) ? network.nodes.slice(0, 300).filter((node) => finite(node, ['x', 'y'])) : [];
       const byId = new Map(nodes.map((node) => [node.id, node]));
       const runs = Array.isArray(network?.runs) ? network.runs.slice(0, 500).filter((run) => run && byId.has(run.from) && byId.has(run.to) &&
-        Object.hasOwn(service.media, run.medium)).map((run) => ({ medium: run.medium, points: [byId.get(run.from),
+        Object.hasOwn(service.media, run.medium)).map((run) => ({ medium: run.medium, surface: run.surface, points: [byId.get(run.from),
           ...(Array.isArray(run.points) ? run.points.slice(0, 80).filter((point) => finite(point, ['x', 'y'])) : []), byId.get(run.to)] })) : [];
       ui.legend.replaceChildren();
       ui.legend.hidden = !runs.length;
@@ -342,12 +344,17 @@
       }
       if (service && nodes.length) {
         const group = svg('g', { 'data-services': system });
-        for (const { points, medium } of runs) {
-          group.append(svg('polyline', { points: points.map(({ x, y }) => `${x},${y}`).join(' '), fill: 'none',
-            stroke: service.media[medium].color, 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
-            'vector-effect': 'non-scaling-stroke' }));
-        }
         const language = locale === 'pt-PT' ? 'pt' : 'en';
+        const describeRoute = ({ medium, surface }) => [service.media[medium][language],
+          surface === 'floor' ? strings().routeFloor : surface === 'ceiling' ? strings().routeCeiling : null].filter(Boolean).join(' · ');
+        for (const run of runs) {
+          const { points, medium } = run;
+          const trace = svg('polyline', { points: points.map(({ x, y }) => `${x},${y}`).join(' '), fill: 'none',
+            stroke: service.media[medium].color, 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+            'vector-effect': 'non-scaling-stroke' });
+          trace.append(svg('title', {}, describeRoute(run)));
+          group.append(trace);
+        }
         const size = Math.max(.13, Math.min(.38, span * .019));
         for (const node of nodes) {
           const kind = Object.hasOwn(service.kinds, node.kind) ? service.kinds[node.kind] : null;
@@ -369,11 +376,12 @@
           group.append(marker);
         }
         ui.view.append(group);
-        for (const medium of new Set(runs.map((run) => run.medium))) {
+        const legend = new Map(runs.map((run) => [describeRoute(run), run.medium]));
+        for (const [description, medium] of legend) {
           const item = document.createElement('li');
           const swatch = document.createElement('span');
           swatch.style.backgroundColor = service.media[medium].color;
-          item.append(swatch, service.media[medium][language]);
+          item.append(swatch, description);
           ui.legend.append(item);
         }
       }

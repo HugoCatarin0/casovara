@@ -1,5 +1,6 @@
 import { applyServiceOperations, inspectServices, resolveServiceNode, serviceLimits, serviceMounts, serviceNodeSymbol, servicePhases, serviceRunPoints, serviceSystems, snapServiceNode } from './building-services.js';
 import { roomStyles } from './builder-engine.js';
+import { isServiceExteriorNode, serviceRouteSurfaces, serviceRunSurface, serviceSurfaceFootprints, supportedRouteSpans } from './service-routing.js';
 
 const ids = Object.keys(serviceSystems);
 const empty = { nodes: [], runs: [] };
@@ -20,6 +21,9 @@ const copy = {
   label: ['Identificação', 'Label'], apply: ['Aplicar alterações', 'Apply changes'], remove: ['Eliminar', 'Delete'], from: ['Origem', 'From'], to: ['Destino', 'To'],
   bends: ['Pontos de passagem', 'Waypoints'], x: ['X (m)', 'X (m)'], y: ['Y (m)', 'Y (m)'],
   mount: ['Montagem', 'Mounting'], wall: ['Parede', 'Wall'], floorMount: ['Chão', 'Floor'], ceiling: ['Teto', 'Ceiling'], free: ['Livre', 'Free'],
+  routeSurface: ['Superfície do traçado', 'Route surface'], autoSurface: ['Automática', 'Automatic'], routeFloor: ['Pavimento', 'Floor'],
+  routeSupport: ['Os troços verticais acompanham a parede dos pontos fixos. Na planta podes rever todo o percurso, incluindo os troços ocultos em 3D.', 'Vertical segments follow the wall at wall-mounted points. Review the full route in plan, including segments concealed in 3D.'],
+  unsupportedRoute: ['A linha tracejada castanha assinala um troço sem suporte.', 'A brown dashed line marks an unsupported segment.'],
   face: ['Face da parede', 'Wall face'], wallSide: ['Face {side} · {direction}', 'Face {side} · {direction}'],
   exterior: ['Exterior', 'Outside'], unassignedFace: ['Sem divisão atribuída', 'No room assigned'],
   wallPosition: ['Posição na parede (%)', 'Position along wall (%)'],
@@ -56,7 +60,12 @@ function linePoints(points) {
   return points.map(({ x, y }) => `${x},${y}`).join(' ');
 }
 
+function routePath(spans) {
+  return spans.map(({ from, to }) => `M ${from.x} ${from.y} L ${to.x} ${to.y}`).join(' ');
+}
+
 const mountLabel = (mount) => mount === 'floor' ? 'floorMount' : mount;
+const surfaceLabel = (surface) => surface === 'floor' ? 'routeFloor' : 'ceiling';
 const hasOutlets = (id, kind) => id === 'electrical' && ['outlet', 'dedicatedOutlet'].includes(kind);
 const hasPhase = (id, kind) => id === 'electrical' && kind === 'supplyEntry';
 const supplyPhase = (node) => node.phase ?? 'single';
@@ -93,11 +102,13 @@ function nodeGraphic(id, node, unit, active, interactive) {
 
 export function renderServicesPlan(level, { layers, unit = .019, locale, selection, move, interactive = false } = {}) {
   const language = locale === 'pt-PT' ? 'pt' : 'en';
+  const footprints = new Map();
   return (layers ?? []).filter((id) => serviceSystems[id] && level.services?.[id]).map((id) => {
     const spec = serviceSystems[id];
     const original = level.services[id];
     const network = { ...original, nodes: original.nodes.map((node) => resolveServiceNode(level,
       move?.selection.system === id && node.id === move.selection.id ? { ...node, ...move.point } : node)) };
+    const nodesById = new Map(network.nodes.map((node) => [node.id, node]));
     const selected = (kind, targetId) => selection?.system === id && selection.kind === kind && selection.id === targetId;
     const runs = network.runs.map((run) => {
       const points = serviceRunPoints(network, run);
@@ -105,10 +116,23 @@ export function renderServicesPlan(level, { layers, unit = .019, locale, selecti
       const medium = spec.media[run.medium];
       const active = selected('run', run.id);
       const dash = mediumDashes[run.medium]?.map((length) => length * unit).join(' ');
-      return `<g data-service-system="${id}" data-service-kind="run" data-service-id="${esc(run.id)}"><title>${esc(run.label || medium[language])}</title>
-        ${interactive ? `<polyline points="${linePoints(points)}" stroke="transparent" stroke-width="${unit * 16}" pointer-events="stroke"/>` : ''}
-        <polyline points="${linePoints(points)}" stroke="#fffdf9" stroke-width="${unit * (active ? 7 : 5)}" pointer-events="none"/>
-        <polyline points="${linePoints(points)}" stroke="${medium.color}" stroke-width="${unit * (active ? 4.2 : 2.55)}" ${dash ? `stroke-dasharray="${dash}"` : ''} pointer-events="none"/>
+      const surface = serviceRunSurface(id, run);
+      if (!footprints.has(surface)) footprints.set(surface, serviceSurfaceFootprints(level, surface));
+      const spans = supportedRouteSpans(points, footprints.get(surface), {
+        exteriorFrom: isServiceExteriorNode(nodesById.get(run.from)),
+        exteriorTo: isServiceExteriorNode(nodesById.get(run.to)),
+      });
+      const unsupported = spans.filter((span) => !span.supported && !span.exterior);
+      const title = [run.label || medium[language], copy[surfaceLabel(surface)][language === 'pt' ? 0 : 1]].join(' · ');
+      const vertices = linePoints(points);
+      const supportedLine = unsupported.length
+        ? `<path d="${routePath(spans.filter((span) => span.supported || span.exterior))}"`
+        : `<polyline points="${vertices}"`;
+      return `<g data-service-system="${id}" data-service-kind="run" data-service-id="${esc(run.id)}" data-run-surface="${surface}"><title>${esc(title)}</title>
+        ${interactive ? `<polyline points="${vertices}" stroke="transparent" stroke-width="${unit * 16}" pointer-events="stroke"/>` : ''}
+        <polyline points="${vertices}" stroke="#fffdf9" stroke-width="${unit * (active ? 7 : 5)}" pointer-events="none"/>
+        ${supportedLine} stroke="${medium.color}" stroke-width="${unit * (active ? 4.2 : 2.55)}" ${dash ? `stroke-dasharray="${dash}"` : ''} pointer-events="none"/>
+        ${unsupported.length ? `<path data-unsupported-route d="${routePath(unsupported)}" stroke="#925127" stroke-width="${unit * (active ? 4.2 : 2.55)}" stroke-dasharray="${unit * 3} ${unit * 5}" pointer-events="none"/>` : ''}
         ${active && interactive ? (run.points ?? []).map((point) => `<circle cx="${point.x}" cy="${point.y}" r="${unit * 3}" fill="#fff" stroke="${medium.color}" stroke-width="${unit * 1.6}"/>`).join('') : ''}</g>`;
     }).join('');
     const nodes = network.nodes.map((node) => `<g transform="translate(${node.x} ${node.y})" data-service-system="${id}" data-service-kind="node" data-service-id="${esc(node.id)}"><title>${esc(nodeDescription(id, node, language))}</title>
@@ -172,6 +196,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   let phase = 'single';
   let generationPhase;
   let medium = 'lighting';
+  let routeSurface = '';
   let mode = 'select';
   let scope = 'current';
   let selected = null;
@@ -197,6 +222,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     count = 1;
     phase = 'single';
     medium = system === 'electrical' ? 'lighting' : Object.keys(serviceSystems[system].media)[0];
+    routeSurface = '';
     clear();
   }
   function clear() {
@@ -271,16 +297,22 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     return `${nodeDescription(system, item, language)} · ${number.format(item.x)}, ${number.format(item.y)}`;
   }
   function runTitle(run, current, spec = serviceSystems[system]) {
-    if (run.label) return run.label;
+    const surface = t(surfaceLabel(serviceRunSurface(system, run)));
+    if (run.label) return `${run.label} · ${surface}`;
     const from = current.nodes.find((node) => node.id === run.from);
     const to = current.nodes.find((node) => node.id === run.to);
-    return [spec.media[run.medium][language], from && spec.kinds[from.kind][language], to && spec.kinds[to.kind][language]].filter(Boolean).join(' · ');
+    return [spec.media[run.medium][language], surface, from && spec.kinds[from.kind][language], to && spec.kinds[to.kind][language]].filter(Boolean).join(' · ');
   }
   function button(action, key, icon, extra = '', pressed) {
     return `<button type="button" class="cv-button" data-action="service-action:${action}" ${pressed === undefined ? '' : `aria-pressed="${pressed}"`} ${extra}>${icon ? glyph(icon) : ''}<span>${t(key)}</span></button>`;
   }
   function mountOptions() {
     return serviceMounts.map((type) => [type, t(mountLabel(type))]);
+  }
+  function surfaceField(key, runMedium, chosen) {
+    const automatic = t(surfaceLabel(serviceRunSurface(system, { medium: runMedium })));
+    return choose(key, 'routeSurface', [['', `${t('autoSurface')} · ${automatic}`],
+      ...serviceRouteSurfaces.map((surface) => [surface, t(surfaceLabel(surface))])], chosen, 'surface');
   }
   function phaseField(key, value) {
     return choose(key, key === 'generation-phase' ? 'generationPhase' : 'phase', servicePhases.map((phase) => [phase, t(phase)]), value, 'phase');
@@ -340,12 +372,16 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     const nodes = current.nodes.map((value) => [value.id, nodeTitle(value)]);
     const media = Object.entries(spec.media).map(([id, entry]) => [id, entry[language]]);
     const kinds = Object.entries(spec.kinds).map(([id, entry]) => [id, entry[language]]);
+    const draft = detailDraft ?? {};
     return `<form data-service-form="${selected.kind}" class="cv-service-detail"><h3>${t(selected.kind)}</h3>
-      <label class="cv-field">${t('label')}<input name="label" maxlength="${serviceLimits.label}" value="${esc(node ? detailDraft?.label ?? item.label : item.label)}"></label>
+      <label class="cv-field">${t('label')}<input name="label" maxlength="${serviceLimits.label}" value="${esc(draft.label ?? item.label)}"></label>
       ${node ? nodeDetail(item, kinds) : `
-        ${choose('', 'medium', media, item.medium, 'medium')}${choose('', 'from', nodes, item.from, 'from')}${choose('', 'to', nodes, item.to, 'to')}
+        ${choose('detail-run-medium', 'medium', media, draft.medium ?? item.medium, 'medium')}
+        ${surfaceField('', draft.medium ?? item.medium, draft.surface ?? item.surface ?? '')}
+        <p class="cv-service-hint">${t('routeSupport')}</p>
+        ${choose('', 'from', nodes, draft.from ?? item.from, 'from')}${choose('', 'to', nodes, draft.to ?? item.to, 'to')}
         <div class="cv-service-points"><h4>${t('bends')}</h4>
-        ${(item.points ?? []).map(({ x, y }, index) => `<div class="cv-service-point-row">${numberField(`bx${index}`, 'x', x, String(index))}${numberField(`by${index}`, 'y', y, String(index))}<button type="button" aria-label="${t('remove')} ${index + 1}" data-action="service-action:remove-bend" data-index="${index}" class="cv-tool">×</button></div>`).join('')}
+        ${(item.points ?? []).map(({ x, y }, index) => `<div class="cv-service-point-row">${numberField(`bx${index}`, 'x', draft[`bx${index}`] ?? x, String(index))}${numberField(`by${index}`, 'y', draft[`by${index}`] ?? y, String(index))}<button type="button" aria-label="${t('remove')} ${index + 1}" data-action="service-action:remove-bend" data-index="${index}" class="cv-tool">×</button></div>`).join('')}
         ${button('bend', 'bend', 'bend', '', mode === 'bend')}</div>`}
       <div class="cv-service-actions"><button type="submit" class="cv-button cv-primary">${t('apply')}</button>${button('remove', 'remove')}</div></form>`;
   }
@@ -374,7 +410,8 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       ${mode === 'place' ? `${choose('kind', 'type', kinds, kind)}
         ${choose('mount', 'mount', mountOptions(), placementMount())}
         ${placementMount() === 'wall' && !getLevel().walls?.length ? `<p class="cv-service-hint">${t('noWall')}</p>` : ''}
-        ${hasOutlets(system, kind) ? countField('count', count) : ''}${hasPhase(system, kind) ? phaseField('phase', phase) : ''}` : mode === 'link' ? choose('medium', 'medium', media, medium) : ''}
+        ${hasOutlets(system, kind) ? countField('count', count) : ''}${hasPhase(system, kind) ? phaseField('phase', phase) : ''}` : mode === 'link' ? `
+        ${choose('medium', 'medium', media, medium)}${surfaceField('route-surface', medium, routeSurface)}` : ''}
       <p class="cv-service-hint">${hint()}</p>
       ${button('canvas', 'canvas', null, 'data-service-canvas')}
       ${message ? `<p class="cv-service-message" role="status">${esc(message)}</p>` : ''}
@@ -384,8 +421,20 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     <section class="cv-panel-section cv-service-section">
       <dl class="cv-service-counts"><div><dt>${t('nodes')}</dt><dd>${current.nodes.length}</dd></div><div><dt>${t('runs')}</dt><dd>${current.runs.length}</dd></div><div><dt>${t('total')}</dt><dd>${number.format(length)} m</dd></div></dl>
       <ul class="cv-service-legend">${Object.entries(spec.media).map(([id, entry]) => `<li><i style="--cv-network-color:${entry.color}"${mediumDashes[id] ? ' data-dashed' : ''}></i>${esc(entry[language])}</li>`).join('')}</ul>
-      ${inspection.warnings.length ? `<details class="cv-service-warnings"><summary>${t('warnings')} · ${inspection.warnings.length}</summary><ul>${inspection.warnings.map((warning) => `<li>${esc(warning[language])}</li>`).join('')}</ul></details>` : ''}
+      ${warningsPanel(inspection.warnings, current)}
     </section>`;
+  }
+
+  function warningsPanel(warnings, current) {
+    if (!warnings.length) return '';
+    const runs = new Map(current.runs.map((run) => [run.id, run]));
+    const unsupported = warnings.some(({ code }) => code === 'unsupported_surface');
+    return `<details class="cv-service-warnings"><summary>${t('warnings')} · ${warnings.length}</summary>
+      ${unsupported ? `<p class="cv-service-hint">${t('unsupportedRoute')}</p>` : ''}<ul>${warnings.map((warning) => {
+      const run = runs.get(warning.runId);
+      const selection = run ? ` <button type="button" class="cv-service-warning-link" data-action="service-action:inspect-run" data-run-id="${esc(run.id)}">${esc(runTitle(run, current))}</button>` : '';
+      return `<li>${esc(warning[language])}${selection}</li>`;
+    }).join('')}</ul></details>`;
   }
 
   function hint() {
@@ -408,6 +457,13 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     if (!record()) return false;
     return apply([{ op: `delete_${selected.kind}`, id: selected.id }], clear);
   }
+  function inspectRun(id) {
+    const picked = { system, kind: 'run', id, levelId: getLevel().id };
+    if (!record(picked)) return;
+    mode = 'select';
+    route = null;
+    select(picked);
+  }
   function removeBend(index) {
     const item = record();
     if (selected?.kind !== 'run' || !item || !Number.isInteger(index) || index < 0 || index >= item.points.length) return;
@@ -425,9 +481,11 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       case 'detail-kind':
       case 'detail-mount':
       case 'detail-wall':
+      case 'detail-run-medium':
         detailDraft = { ...detailDraft, ...Object.fromEntries(new FormData(input.form)) };
         break;
-      case 'medium': medium = input.value; route = null; break;
+      case 'medium': medium = input.value; route = null; routeSurface = ''; break;
+      case 'route-surface': routeSurface = input.value; break;
       case 'visible':
         if (input.checked) { visible.add(input.value); pinned.add(input.value); }
         else { visible.delete(input.value); pinned.delete(input.value); }
@@ -454,6 +512,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     const label = String(data.get('label') ?? '').trim();
     const fields = selected.kind === 'node' ? nodeFields(data, item, label) : {
       label, medium: data.get('medium'), from: data.get('from'), to: data.get('to'),
+      ...(data.has('surface') ? { surface: data.get('surface') || null } : {}),
       points: item.points.map((_, index) => ({ x: Number(data.get(`bx${index}`)), y: Number(data.get(`by${index}`)) })),
     };
     if (!fields) { message = t('noWall'); refresh(); return; }
@@ -519,7 +578,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       else message = t('pickSource');
     } else if (node && node.id !== route.from) {
       const before = new Set(network().runs.map(({ id }) => id));
-      apply([{ op: 'add_run', run: { medium, to: node.id, ...route } }], (next) => {
+      apply([{ op: 'add_run', run: { medium, to: node.id, ...route, ...(routeSurface ? { surface: routeSurface } : {}) } }], (next) => {
         mode = 'select'; route = null;
         const added = next.runs.find(({ id }) => !before.has(id));
         if (added) select({ kind: 'run', id: added.id, system, levelId: getLevel().id });
@@ -575,9 +634,9 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   }
 
   return {
-    clear, click, field, hint, locate, modeAction, moveNode, panel, preview, previewMove, remove, removeBend, select, selection, submit, updateWallFaces,
+    clear, click, field, hint, inspectRun, locate, modeAction, moveNode, panel, preview, previewMove, remove, removeBend, select, selection, submit, updateWallFaces,
     reveal(id = system, { keepVisible = false } = {}) { setSystem(id, keepVisible); },
-    reset() { clear(); visible.clear(); pinned.clear(); generationPhase = undefined; },
+    reset() { clear(); visible.clear(); pinned.clear(); generationPhase = undefined; routeSurface = ''; },
     get mode() { return mode; },
     get layers() { return [...visible]; },
     get system() { return system; },

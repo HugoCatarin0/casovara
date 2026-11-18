@@ -1,16 +1,9 @@
-import { resolveServiceNode, serviceLimits, serviceSystems } from './building-services.js';
+import { resolveServiceNode, serviceLimits, serviceSystems, snapServiceNode } from './building-services.js';
 import { shade } from './model-furniture.js';
+import { isServiceExteriorNode, serviceRunSurface, supportedRouteSpans } from './service-routing.js';
 import { effectiveWallHeight, wallBaseOffset } from './wall-spec.js';
 
-// These display bands separate networks vertically in the model. They describe
-// the schematic view and are independent of the actual installation heights.
-const bands = {
-  electrical: { serviceFeed: [.062, .078], lighting: [.86, .055], power: [.12, .057], control: [.80, .055], dedicated: [.16, .066] },
-  plumbing: { cold: [.076, .070], hot: [.105, .070], drain: [.039, .095] },
-  vmc: { supply: [.925, .105], extract: [.885, .105], intake: [.949, .105], exhaust: [.908, .105] },
-  airConditioning: { refrigerant: [.786, .082], condensate: [.209, .065] },
-  radiantFloor: { supply: [.042, .055], return: [.023, .055], loop: [.018, .035] },
-};
+const wideRoutes = new Set(['drain', 'refrigerant']);
 
 const fixtureHeights = {
   electrical: { supplyEntry: .32, panel: .50, junction: .84, light: .90, switch: .41, outlet: .16, dedicatedOutlet: .24 },
@@ -62,12 +55,12 @@ function fixturePlate(faces, owner, vertex, outline, back, depth, fill) {
 }
 
 function mountedFixture(faces, owner, node, size, color, selected) {
-  const { mount, height, wallHeight } = node;
-  const wall = mount === 'wall';
-  const normal = wall ? node.angle * Math.PI / 180 : 0;
-  const cos = Math.cos(normal), sin = Math.sin(normal);
+  const { mount, height, wall } = node;
   const vertex = wall
-    ? (u, v, offset) => [node.x - u * sin + offset * cos, node.y + u * cos + offset * sin, height + v]
+    ? (u, v, offset) => {
+      const { x, y } = wallPoint(wall, u, offset);
+      return [x, y, height + v];
+    }
     : (u, v, offset) => [node.x + u, node.y + v, height + offset * (mount === 'ceiling' ? -1 : 1)];
   const dimensions = (w, h, x = 0, y = 0) => centeredSquare({ x, y }, w, h);
   const count = outlets.has(node.kind) && Number.isInteger(node.count) ? Math.max(1, Math.min(serviceLimits.count, node.count))
@@ -75,9 +68,8 @@ function mountedFixture(faces, owner, node, size, color, selected) {
   const columns = Math.min(10, count);
   const rows = Math.ceil(count / columns);
   const width = Math.max(size, Math.min(.58, columns * .12 + .035));
-  const faceHeight = Math.min(wallHeight, Math.max(size * .82, Math.min(.50, rows * .10 + .035)));
-  // The anchor sits slightly clear of the face so plan markers remain visible.
-  const back = wall ? -.011 : 0;
+  const faceHeight = Math.min(wall ? wall.fullHeight : Infinity, Math.max(size * .82, Math.min(.50, rows * .10 + .035)));
+  const back = wall ? -.001 : 0;
   const depth = largeDevices.has(node.kind) ? .10 : .045;
   if (selected) fixturePlate(faces, owner, vertex, dimensions(width + .065, faceHeight + .065), back, .009, fixtureDetail);
   const outline = diffusers.has(node.kind) ? Array.from({ length: 8 }, (_, index) => {
@@ -108,29 +100,112 @@ function mountedFixture(faces, owner, node, size, color, selected) {
 
 const validPosition = (point) => point && Number.isFinite(point.x) && Number.isFinite(point.y);
 
-export function appendModelServices(faces, level, floor, systems, selected, ceilingHeightAt) {
+const covers = ({ x, y, width, depth }, point) => point.x >= x - 1e-6 && point.y >= y - 1e-6 &&
+  point.x <= x + width + 1e-6 && point.y <= y + depth + 1e-6;
+
+function wallFrame(position, host, levelHeight, floor, sectionTop, openings) {
+  if (!host) return null;
+  const { fraction, side } = position.wall;
+  const dx = host.x2 - host.x1, dy = host.y2 - host.y1;
+  const length = Math.hypot(dx, dy);
+  const tx = -dx * side / length, ty = -dy * side / length;
+  const nx = ty, ny = -tx;
+  const halfThickness = host.thickness / 2;
+  const bottom = floor + wallBaseOffset(host);
+  const fullHeight = effectiveWallHeight(host, levelHeight);
+  return {
+    x: host.x1 + dx * fraction + nx * halfThickness, y: host.y1 + dy * fraction + ny * halfThickness,
+    tx, ty, nx, ny, halfThickness, length, fraction, bottom,
+    fullHeight, top: Math.min(sectionTop, bottom + fullHeight),
+    openings: openings.get(host.id) ?? [],
+  };
+}
+
+function wallPoint(wall, tangent, normal) {
+  return { x: wall.x + wall.tx * tangent + wall.nx * normal, y: wall.y + wall.ty * tangent + wall.ny * normal };
+}
+
+function mountingPosition(level, source, defaults) {
+  if (source.mount || defaults !== 'wall') return resolveServiceNode(level, source);
+  const nearby = snapServiceNode(level, source, { roomId: source.roomId, threshold: .30 });
+  return nearby ? { ...source, ...nearby } : source;
+}
+
+function drawWallRun(faces, owner, node, target, width, exposed, floor, color) {
+  const { wall, height } = node;
+  if (!wall) return;
+  let bottom = Math.max(wall.bottom, Math.min(height, target));
+  let top = Math.min(wall.top, Math.max(height, target));
+  const halfWidth = Math.min(width * .36, wall.length * Math.min(wall.fraction, 1 - wall.fraction));
+  const margin = halfWidth / wall.length;
+  for (const cut of wall.openings) {
+    if (wall.fraction + margin <= cut.a || wall.fraction - margin >= cut.b) continue;
+    const sill = floor + cut.sill, lintel = floor + cut.top;
+    if (height >= sill && height <= lintel) return;
+    if (height > lintel) bottom = Math.max(bottom, lintel);
+    else top = Math.min(top, sill);
+  }
+  if (top - bottom < .005 || halfWidth < .002) return;
+  const front = exposed ? .004 : -.007;
+  const back = Math.max(-wall.halfThickness, front - .009);
+  const footprint = [[-halfWidth, back], [halfWidth, back], [halfWidth, front], [-halfWidth, front]].map(([offset, inset]) => {
+    const { x, y } = wallPoint(wall, offset, inset);
+    return [x, y];
+  });
+  solid(faces, owner, footprint, bottom, top - bottom, color);
+}
+
+function drawSurfaceRun(faces, owner, chain, areas, base, width, depth, color, excluded = []) {
+  for (const segment of supportedRouteSpans(chain, areas)) {
+    if (!segment.supported) continue;
+    const visible = excluded.length ? supportedRouteSpans([segment.from, segment.to], excluded).filter(({ supported }) => !supported) : [segment];
+    for (const { from, to } of visible) {
+      const footprint = span(from, to, width);
+      if (footprint) solid(faces, owner, footprint, base, depth, color);
+    }
+  }
+}
+
+export function appendModelServices(faces, level, floor, systems, selected, {
+  ceilingPlanes, floorAreas, terrain, sectionTop, exposeFloor, exposeCeiling, openings,
+}) {
   if (!level.services || !Number.isFinite(level.height) || level.height <= .1) return;
   const localHeight = (fraction) => floor + Math.min(level.height - .028, level.height * fraction);
   const walls = new Map((level.walls ?? []).map((wall) => [wall.id, wall]));
+  const undersideAt = (point) => ceilingPlanes.find(({ areas }) => areas.some((area) => covers(area, point)))?.z;
+  const floorAt = (point, exterior) => floorAreas.some((area) => covers(area, point)) ? floor
+    : exterior && terrain && covers(terrain, point) ? terrain.z : undefined;
   for (const system of systems) {
     if (!Object.hasOwn(serviceSystems, system)) continue;
     const descriptor = serviceSystems[system];
+    const systemOrder = Object.keys(serviceSystems).indexOf(system);
+    const mediaOrder = Object.keys(descriptor.media);
     const network = level.services[system];
     if (!Array.isArray(network?.nodes) || !Array.isArray(network.runs)) continue;
     const nodes = new Map();
     for (const source of network.nodes) {
       if (!source || !Object.hasOwn(descriptor.kinds, source.kind)) continue;
-      const position = resolveServiceNode(level, source);
+      const defaults = descriptor.kinds[source.kind].defaultMount;
+      const position = mountingPosition(level, source, defaults);
       if (!validPosition(position)) continue;
-      const wall = source.mount === 'wall' && Number.isFinite(position.angle) ? walls.get(source.wall?.wallId) : null;
-      const mount = wall ? 'wall' : ['floor', 'ceiling'].includes(source.mount) ? source.mount : 'free';
-      const nominalHeight = localHeight(fixtureHeights[system][source.kind] ?? .45);
-      const bottom = wall ? floor + wallBaseOffset(wall) : floor;
-      const wallHeight = wall ? effectiveWallHeight(wall, level.height) : level.height;
-      const margin = Math.min(wallHeight / 2, outlets.has(source.kind) ? .26 : .16);
-      const height = mount === 'wall' ? Math.max(bottom + margin, Math.min(bottom + wallHeight - margin, nominalHeight))
-        : mount === 'floor' ? floor + .013 : mount === 'ceiling' ? ceilingHeightAt(position) - .006 : nominalHeight;
-      nodes.set(source.id, { ...source, ...position, mount, height, wallHeight });
+      const host = position.mount === 'wall' && Number.isFinite(position.angle) ? walls.get(position.wall?.wallId) : null;
+      const wall = wallFrame(position, host, level.height, floor, sectionTop, openings);
+      const mount = wall ? 'wall' : (source.mount ?? defaults) === 'ceiling' ? 'ceiling' : 'floor';
+      const location = wall ?? position;
+      let height;
+      let visible;
+      if (wall) {
+        const nominalHeight = localHeight(fixtureHeights[system][source.kind] ?? .45);
+        const margin = Math.min(wall.fullHeight / 2, outlets.has(source.kind) ? .26 : .16);
+        height = Math.max(wall.bottom + margin, Math.min(wall.bottom + wall.fullHeight - margin, nominalHeight));
+        visible = height <= wall.top && !wall.openings.some(({ a, b, sill, top }) => wall.fraction > a && wall.fraction < b &&
+          height >= floor + sill && height <= floor + top);
+      } else {
+        const support = mount === 'ceiling' ? undersideAt(location) : floorAt(location, isServiceExteriorNode(source));
+        visible = Number.isFinite(support);
+        height = mount === 'ceiling' ? support - .006 : support + .006;
+      }
+      nodes.set(source.id, { ...source, ...position, x: location.x, y: location.y, mount, wall, height, visible });
     }
     const active = (kind, id) => selected?.levelId === level.id && selected.system === system && selected.kind === kind && selected.id === id;
 
@@ -140,44 +215,40 @@ export function appendModelServices(faces, level, floor, systems, selected, ceil
       if (!material) continue;
       const start = nodes.get(run.from), end = nodes.get(run.to);
       if (!start || !end) continue;
-      const [band, size] = bands[system][run.medium] ?? [.45, .065];
+      const surface = serviceRunSurface(system, run);
+      const size = run.medium === 'loop' ? .025 : (system === 'vmc' || wideRoutes.has(run.medium)) ? .055 : .035;
       const isActive = active('run', run.id);
       const width = isActive ? size * 1.65 : size;
-      const height = localHeight(band);
-      const depth = Math.min(width * .44, level.height * .018);
+      // Keep coincident traces on the same surface without sharing the same depth.
+      const separation = systemOrder * .001 + mediaOrder.indexOf(run.medium) * .00015;
       const color = isActive ? shade(material.color, 32) : material.color;
       const owner = { kind: 'service-run', system, id: run.id, levelId: level.id };
       const bends = Array.isArray(run.points) ? run.points.filter(validPosition) : [];
       const chain = [start, ...bends, end];
-      for (let index = 1; index < chain.length; index++) {
-        const footprint = span(chain[index - 1], chain[index], width);
-        if (footprint) solid(faces, owner, footprint, height, depth, color);
+      if (surface === 'floor') {
+        const datum = floor + separation + (exposeFloor ? .003 : -.025);
+        drawSurfaceRun(faces, owner, chain, floorAreas, datum, width, .006, color);
+      } else {
+        const lowerPlanes = [];
+        for (const { z, areas } of ceilingPlanes) {
+          const datum = exposeCeiling ? z - .006 - separation : z + .008 + separation;
+          drawSurfaceRun(faces, owner, chain, areas, datum, width, .006, color, lowerPlanes);
+          lowerPlanes.push(...areas);
+        }
       }
-      for (const bend of bends) solid(faces, owner, centeredSquare(bend, width), height, depth, color);
-      for (const fixture of [start, end]) {
-        const fixtureHeight = fixture.height;
-        const size = Math.abs(fixtureHeight - height);
-        if (size > .04) solid(faces, owner, centeredSquare(fixture, width * .71), Math.min(fixtureHeight, height), size, color);
+      for (const node of [start, end]) {
+        if (!node.wall) continue;
+        const target = surface === 'floor' ? floorAt(node, isServiceExteriorNode(node)) ?? floor
+          : undersideAt(node) ?? node.wall.top;
+        drawWallRun(faces, owner, node, target, width, surface === 'floor' ? exposeFloor : exposeFloor || exposeCeiling, floor, color);
       }
     }
 
     for (const node of nodes.values()) {
-      const height = node.height;
+      if (!node.visible) continue;
       const owner = { kind: 'service-node', system, id: node.id, levelId: level.id };
       const width = largeDevices.has(node.kind) ? .30 : .17;
-      const thickness = largeDevices.has(node.kind) ? .13 : .075;
-      const isActive = active('node', node.id);
-      if (node.mount !== 'free' || node.kind === 'supplyEntry' || (outlets.has(node.kind) && node.count > 1)) {
-        mountedFixture(faces, owner, node, width, descriptor.color, isActive);
-        continue;
-      }
-      if (isActive) solid(faces, owner, centeredSquare(node, width + .09), height, .027, fixtureDetail);
-      const outline = diffusers.has(node.kind) ? Array.from({ length: 8 }, (_, index) => {
-        const angle = index * Math.PI / 4;
-        return [node.x + Math.cos(angle) * width / 2, node.y + Math.sin(angle) * width / 2];
-      }) : centeredSquare(node, width, width * .82);
-      solid(faces, owner, outline, height + .009, thickness, descriptor.color);
-      solid(faces, owner, centeredSquare(node, width * .39), height + .009 + thickness, .006, fixtureDetail);
+      mountedFixture(faces, owner, node, width, descriptor.color, active('node', node.id));
     }
   }
 }

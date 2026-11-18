@@ -2326,12 +2326,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
           break;
         }
         if (arg === 'remove-bend') { servicesEditor.removeBend(Number(button.dataset.index)); break; }
-        servicesEditor.modeAction(arg);
+        if (arg === 'inspect-run') servicesEditor.inspectRun(button.dataset.runId);
+        else servicesEditor.modeAction(arg);
         if (arg === 'generate' || arg === 'remove') break;
         if (viewMode === 'view3d') viewMode = 'split';
         updateMode();
         refreshServices();
-        studioPanel.querySelector(`[data-action="service-action:${arg}"]`)?.focus({ preventScroll: true });
+        if (arg === 'inspect-run') studioPanel.querySelector('[data-service-form="run"] select[name="medium"]')?.focus();
+        else studioPanel.querySelector(`[data-action="service-action:${arg}"]`)?.focus({ preventScroll: true });
         break;
       }
       case 'mode': viewMode = arg; render(); break;

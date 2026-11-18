@@ -2,6 +2,7 @@ import { elements, levelBounds, projectArea, roomStyles } from './builder-engine
 import { formatNumber } from './core.js';
 import { normalizeBuildingServices, resolveServiceNode, serviceNodeSymbol, serviceRunPoints, serviceSystems } from './building-services.js';
 import { normalizeConstructionSchedule, scheduleConstruction } from './construction-schedule.js';
+import { serviceRunSurface } from './service-routing.js';
 import { slabFor, slabFootprints, slabOutline } from './slab.js';
 
 const copy = {
@@ -28,6 +29,7 @@ const copy = {
     slabChanges: { added: 'Adicionadas', changed: 'Alteradas', removed: 'Removidas' },
     area: 'Área interior', units: 'm²', levels: 'Pisos', rooms: 'Divisões', walls: 'Paredes', items: 'Objetos e vãos',
     services: 'Pontos e traçados', layers: 'Camada da proposta', architecture: 'Arquitetura',
+    floorRoute: 'Pavimento', ceilingRoute: 'Teto',
     construction: 'Plano de obra', noConstruction: 'Esta versão ainda não tem um plano de obra.',
     workdays: 'Dias úteis', savedDays: 'Dias úteis ganhos face à sequência', critical: 'Caminho crítico das dependências',
     added: 'Adicionados', changed: 'Alterados', removed: 'Removidos',
@@ -64,6 +66,7 @@ const copy = {
     comparison: 'Compare the current plan and proposal', noFloor: 'No storey', noSlab: 'No slab', slab: 'Slab', slabs: 'Slabs',
     area: 'Internal area', units: 'm²', levels: 'Storeys', rooms: 'Rooms', walls: 'Walls', items: 'Objects and openings',
     services: 'Points and routes', layers: 'Proposal layer', architecture: 'Architecture',
+    floorRoute: 'Floor', ceilingRoute: 'Ceiling',
     construction: 'Construction programme', noConstruction: 'There is no construction programme in this version.',
     workdays: 'Workdays', savedDays: 'Workdays saved against sequential work', critical: 'Dependency critical path',
     added: 'Added', changed: 'Changed', removed: 'Removed',
@@ -238,9 +241,11 @@ function previewPlan(container, level, viewport, copy, differences, proposed, is
     for (const run of network.runs) {
       const points = serviceRunPoints(network, run, level);
       if (!points?.length) continue;
+      const surface = serviceRunSurface(system, run);
       svgNode(layer, 'polyline', { points: points.map(({ x, y }) => `${x},${y}`).join(' '), fill: 'none',
         stroke: profile.media[run.medium].color, 'stroke-width': 2, 'stroke-linejoin': 'round',
-        'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke' });
+        'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke',
+        ...(surface === 'ceiling' ? { 'stroke-dasharray': '5 3' } : {}) });
     }
     const size = Math.max(.13, Math.min(.32, Math.max(width, height) * .019));
     for (const fixture of network.nodes) {
@@ -519,13 +524,24 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
         ? `${number(slabFor(floor).thickness * 100)} cm` : t.noSlab;
       detail.hidden = !detail.textContent;
     }
-    const mediaUsed = new Set([before, after].flatMap((floor) => (floor?.services?.[activeLayer]?.runs ?? []).map(({ medium }) => medium)));
+    const mediaUsed = new Map();
+    for (const floor of [before, after]) {
+      const runs = floor?.services?.[activeLayer]?.runs;
+      if (!Array.isArray(runs)) continue;
+      for (const run of runs) {
+        if (!run) continue;
+        const surfaces = mediaUsed.get(run.medium) ?? new Set();
+        surfaces.add(serviceRunSurface(activeLayer, run));
+        mediaUsed.set(run.medium, surfaces);
+      }
+    }
     const legend = $('service-legend');
-    legend.replaceChildren(...Object.entries(serviceSystems[activeLayer]?.media ?? {}).filter(([id]) => mediaUsed.has(id)).map(([, entry]) => {
+    legend.replaceChildren(...Object.entries(serviceSystems[activeLayer]?.media ?? {}).filter(([id]) => mediaUsed.has(id)).map(([id, entry]) => {
       const line = document.createElement('li');
       const swatch = document.createElement('span');
       swatch.style.backgroundColor = entry.color;
-      line.append(swatch, entry[language]);
+      const surfaces = [...mediaUsed.get(id)].map((surface) => surface === 'ceiling' ? t.ceilingRoute : t.floorRoute).join(' / ');
+      line.append(swatch, `${entry[language]} · ${surfaces}`);
       return line;
     }));
     legend.hidden = !legend.childElementCount;

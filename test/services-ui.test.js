@@ -56,6 +56,36 @@ test('The canvas tools place points, connect them through a bend and preserve th
   assert.ok(legend.height > 0);
 });
 
+test('The route editor overrides the support and locates unsupported bends for correction', () => {
+  const floor = { ...emptyFloor('ground'), rooms: [{ id: 'inside', type: 'living', x: 0, y: 0, w: 4, h: 3 }] };
+  const { editor } = createEditor([floor]);
+  for (const x of [1, 3]) {
+    editor.modeAction('place');
+    click(editor, x, 1);
+  }
+  editor.modeAction('link');
+  assert.match(editor.panel(), /Automática · Teto/);
+  choose(editor, 'route-surface', 'floor');
+  click(editor, 1, 1);
+  click(editor, 2, -1);
+  click(editor, 3, 1);
+  let [run] = floor.services.electrical.runs;
+  assert.equal(run.surface, 'floor');
+  assert.match(editor.panel(), new RegExp(`inspect-run" data-run-id="${run.id}"`));
+  const svg = () => renderServicesPlan(floor, { layers: editor.layers, locale: 'pt-PT' });
+  assert.match(svg(), /data-run-surface="floor"/);
+  assert.match(svg(), /data-unsupported-route/);
+
+  editor.modeAction('select');
+  editor.inspectRun(run.id);
+  assert.equal(editor.selection().id, run.id);
+  edit(editor, { medium: run.medium, from: run.from, to: run.to, surface: '', bx0: 2, by0: 1 });
+  [run] = floor.services.electrical.runs;
+  assert.equal(Object.hasOwn(run, 'surface'), false);
+  assert.match(svg(), /data-run-surface="ceiling"/);
+  assert.doesNotMatch(svg(), /data-unsupported-route/);
+});
+
 test('Generating all storeys requests confirmation before replacing manual work, then commits one shared history step', () => {
   const levels = ['ground', 'first'].map((id) => ({ ...emptyFloor(id), rooms: [{ id: `${id}-room`, type: 'living', x: 0, y: 0, w: 4, h: 3 }] }));
   const { editor, commits, confirmations } = createEditor(levels);

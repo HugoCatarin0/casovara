@@ -30,6 +30,10 @@ Abra **Instalações** no editor e escolha uma especialidade. Pode partir de uma
 
 Para fixar um ponto à parede, escolha a face voltada para a divisão servida. A marca aponta para essa divisão e acompanha a parede quando esta é deslocada. Os pontos também admitem montagem no chão, no teto ou posição livre. Use a quantidade da tomada para representar várias no mesmo local, por exemplo `T 3×`.
 
+Em **Traçar ligação**, escolha a superfície do traçado ou use **Automática** para aplicar a predefinição da rede. Em 3D, os troços horizontais apoiam-se no pavimento ou no teto e os troços verticais seguem a parede dos pontos fixos. A vista em planta mantém o percurso completo para edição. A linha tracejada castanha indica um troço sem apoio e **Pontos a rever** permite selecionar a ligação correspondente.
+
+O **Corte** revela os traçados no pavimento. Quando o teto está visível no modelo, o modo **Técnico** permite ver os traçados junto à sua face inferior. A vista exterior com materiais oculta os troços embutidos.
+
 | Especialidade | Redes e pontos representados |
 | --- | --- |
 | Eletricidade | Entrada do cabo principal monofásica ou trifásica, quadro, grupos de tomadas, iluminação, interruptores e ligações. |
@@ -100,6 +104,8 @@ Os clientes externos fornecem o JSON do projeto nas ferramentas de edição e in
 Para alterar a espessura da laje pelo MCP, use `{ "op": "set_level", "levelId": "identificador-do-piso", "slab": { "thickness": 0.22 } }` em `casovara_edit_plan`. O modo e o perímetro existentes são preservados. A camada **Laje** da pré-visualização mostra a área ocupada pela laje e a espessura escolhida.
 
 Para gerar eletricidade e águas por MCP, envie `operations: [{ "op": "generate", "systems": ["electrical", "plumbing"] }]` com o `project`. Use `levelIds` para limitar aos pisos pretendidos e `replace: true` para substituir esquemas existentes. Para alterações, inspecione os identificadores da rede e use a operação `edit` com a especialidade, `levelId` e `changes`. O Assistente IA usa as mesmas operações e permite comparar a proposta por camada antes de a aplicar.
+
+Em `add_run` ou `update_run`, use `run.surface` com `floor` ou `ceiling` para fixar o suporte. Em edição, `null` repõe a opção automática. A inspeção devolve a superfície efetiva juntamente com avisos sobre troços sem suporte. Os pontos intermédios continuam editáveis.
 
 Para gerar um plano de obra, envie `operations: [{ "op": "generate", "startDate": "2027-03-01" }]` à ferramenta `casovara_plan_construction` com o `project`. A operação `edit` aplica alterações numa só proposta. Para ajustar uma tarefa, envie `changes: [{ "op": "upsert_task", "task": { "id": "identificador-da-tarefa", "days": 5 } }]` na operação `edit`.
 

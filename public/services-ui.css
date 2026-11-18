@@ -32,6 +32,8 @@
 .cv-service-layers summary, .cv-service-warnings summary { font-weight: 700; cursor: pointer; }
 .cv-service-warnings ul { margin: .4rem 0 0; padding-inline-start: 1.05rem; }
 .cv-service-warnings li + li { margin-top: .28rem; }
+.cv-service-warnings > .cv-service-hint { margin-top: .38rem; }
+.cv-service-warning-link { display: block; padding: .26rem 0; border: 0; font: inherit; font-weight: 650; text-align: start; color: #225477; background: transparent; text-decoration: underline; cursor: pointer; }
 .cv-service-detail { display: grid; gap: .52rem; padding-top: .55rem; border-top: 1px solid var(--studio-line); }
 .cv-service-detail h3, .cv-service-detail h4 { margin: 0; color: #2c4c63; font-size: .79rem; }
 .cv-service-detail .cv-field small { color: #496476; font-size: .7rem; font-weight: 500; }

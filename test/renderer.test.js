@@ -191,16 +191,17 @@ test('The 3D installation layer uses chosen systems, storey heights, and pickabl
   assert.ok(plumbing.some(({ fill, owner }) => owner.kind === 'service-run' && fill === serviceSystems.plumbing.media.cold.color));
   const upperOnly = inLayer(enabled(['electrical', 'plumbing'], { scope: 'level' }));
   assert.ok(upperOnly.every(({ owner }) => owner.levelId === upper.id));
-  const full = inLayer(enabled(['electrical', 'plumbing'], { selectedService: { system: 'electrical', kind: 'node', id: 'lamp', levelId: ground.id } }));
-  const selected = full.filter(({ owner }) => owner.kind === 'service-node' && owner.id === 'lamp');
+  const selectedService = { system: 'plumbing', kind: 'node', id: 'sink', levelId: upper.id };
+  const full = inLayer(enabled(['electrical', 'plumbing'], { selectedService }));
+  const selected = full.filter(({ owner }) => owner.kind === 'service-node' && owner.id === 'sink');
   assert.ok(selected.length > 0);
-  assert.ok(Math.min(...selected.flatMap(({ points }) => points.map(([x]) => x))) < 3.9, 'Selection outline is wider than the node');
+  assert.ok(Math.min(...selected.flatMap(({ points }) => points.map(([x]) => x))) < 3.89, 'Selection outline is wider than the node');
 
-  const scene = compileScene(modelFaces(project, ground.id, true, { services: ['electrical'] }));
+  const scene = compileScene(modelFaces(project, upper.id, true, { services: ['plumbing'], selectedService }));
   const frame = cameraFrame(scene, { ...camera, elevation: 90 }, width, height);
   const elevation = Math.max(...selected.flatMap(({ points }) => points.map((point) => point[2])));
-  assert.deepEqual(pickScene(scene, frame, ...projectVertex(frame, 4, 4, elevation)), {
-    kind: 'service-node', system: 'electrical', id: 'lamp', levelId: ground.id,
+  assert.deepEqual(pickScene(scene, frame, ...projectVertex(frame, 4, 2, elevation)), {
+    kind: 'service-node', system: 'plumbing', id: 'sink', levelId: upper.id,
   });
 });
 
@@ -208,6 +209,7 @@ test('3D service fixtures and their runs follow both faces of a moved diagonal w
   const project = makeProject('blank', 'lsf', true);
   const level = project.levels[0];
   const wall = makeWall(2, 1, 6, 4, .20);
+  level.rooms.push(makeRoom('living', 0, 0, 10, 6));
   level.walls.push(wall);
   const mounted = (id, kind, side, extra) => ({ id, kind, x: 0, y: 0, mount: 'wall',
     wall: { wallId: wall.id, fraction: .5, side }, ...extra });
@@ -215,7 +217,7 @@ test('3D service fixtures and their runs follow both faces of a moved diagonal w
     nodes: [mounted('outlets', 'outlet', 1, { count: 3 }), mounted('board', 'panel', -1)],
     runs: [{ id: 'power-run', medium: 'power', from: 'board', to: 'outlets', points: [] }],
   } };
-  const faces = () => modelFaces(project, level.id, true, { services: ['electrical'] });
+  const faces = () => modelFaces(project, level.id, true, { services: ['electrical'], simulator: { sectionHeight: 1.75, site: false } });
   const outletFaces = (allFaces) => allFaces.filter(({ owner }) => owner?.id === 'outlets');
   const boardFaces = (allFaces) => allFaces.filter(({ owner }) => owner?.id === 'board');
   const signedDistance = ([x, y]) => (x - (wall.x1 + wall.x2) / 2) * -.6 + (y - (wall.y1 + wall.y2) / 2) * .8;
@@ -227,16 +229,16 @@ test('3D service fixtures and their runs follow both faces of a moved diagonal w
     const board = boardFaces(scene);
     assert.ok(outlets.length > 3);
     assert.ok(board.length > 0);
-    assert.ok(outlets.every(({ points }) => points.every((point) => signedDistance(point) > .1)));
+    assert.ok(outlets.every(({ points }) => points.every((point) => signedDistance(point) > .098)));
     const plates = outlets.filter(({ fill }) => fill === '#fff6da');
     assert.equal(plates.length, 3);
     for (const { points } of plates) {
       assert.ok(points.every((point) => Math.abs(signedDistance(point) - signedDistance(points[0])) < 1e-6), 'Socket plates align with the diagonal face');
       assert.ok(points.every((point) => point[2] > .35 && point[2] < .53));
     }
-    assert.ok(board.every(({ points }) => points.every((point) => signedDistance(point) < -.1)));
+    assert.ok(board.every(({ points }) => points.every((point) => signedDistance(point) < -.098)));
     const reachesOutlets = scene.some(({ owner, points }) => owner?.id === 'power-run' &&
-      points.some((point) => signedDistance(point) > .112 && Math.abs(point[2] - level.height * .16) < 1e-9));
+      points.some((point) => Math.abs(signedDistance(point) - .104) < 1e-8 && Math.abs(point[2] - level.height * .16) < 1e-9));
     assert.ok(reachesOutlets);
     const compiled = compileScene(scene);
     const azimuth = Math.atan2(-.6, .8) * 180 / Math.PI;
@@ -251,6 +253,8 @@ test('3D service fixtures and their runs follow both faces of a moved diagonal w
 test('3D ceiling and floor fixtures stay in their storey and service entries show their phases', () => {
   const project = makeProject('blank', 'lsf', true);
   const upper = makeLevel('First floor');
+  upper.rooms.push(makeRoom('living', 0, 0, 6, 4));
+  upper.ceiling = true;
   project.levels.push(upper);
   upper.services = { electrical: {
     nodes: [
@@ -268,14 +272,17 @@ test('3D ceiling and floor fixtures stay in their storey and service entries sho
     const z = (id) => owned(id).flatMap(({ points }) => points.map((point) => point[2]));
     assert.ok(Math.min(...z('floor-outlet')) > groundHeight);
     assert.ok(Math.max(...z('floor-outlet')) < groundHeight + .075);
-    assert.ok(Math.min(...z('light')) > groundHeight + upper.height - .13);
-    assert.ok(Math.max(...z('light')) < groundHeight + upper.height - .06);
+    if (cutaway) assert.deepEqual(z('light'), []);
+    else {
+      assert.ok(Math.min(...z('light')) > groundHeight + upper.height - .13);
+      assert.ok(Math.max(...z('light')) < groundHeight + upper.height - .06);
+    }
     assert.equal(owned('single').filter(({ fill }) => fill === '#fff6da').length, 1);
     assert.equal(owned('three').filter(({ fill }) => fill === '#fff6da').length, 3);
   }
 });
 
-test('3D ceiling fixtures hang below the slab overhead and remain visible when the ceiling is hidden', () => {
+test('3D ceiling fixtures hang under rendered supports and disappear when the support is hidden', () => {
   const project = makeProject('blank', 'lsf', true);
   const ground = project.levels[0];
   ground.rooms.push(makeRoom('living', 0, 0, 6, 4));
@@ -295,22 +302,126 @@ test('3D ceiling fixtures hang below the slab overhead and remain visible when t
   const mountedHeight = ceilingHeight(allFloors, 'covered-light');
   assert.ok(mountedHeight < slabUnderside);
   assert.ok(mountedHeight > slabUnderside - .01);
-  assert.ok(ceilingHeight(allFloors, 'open-light') > slabUnderside);
+  assert.equal(ceilingHeight(allFloors, 'open-light'), -Infinity);
 
-  ground.ceiling = false;
   const visibleGround = modelFaces(project, ground.id, false, options);
-  assert.equal(ceilingHeight(visibleGround, 'covered-light'), mountedHeight);
-  const scene = compileScene(visibleGround);
-  const frame = cameraFrame(scene, { ...camera, elevation: 70 }, width, height);
-  assert.equal(pickScene(scene, frame, ...projectVertex(frame, 1, 1, mountedHeight))?.id, 'covered-light');
+  assert.ok(visibleGround.every(({ owner }) => owner?.kind !== 'service-node'));
 
   upper.slab = { mode: 'custom', thickness: .3, footprint: { x: 3, y: 0, width: 2, depth: 3 } };
-  const changed = modelFaces(project, ground.id, false, options);
+  const changed = modelFaces(project, ground.id, false, { ...options, scope: 'all' });
   assert.ok(Math.abs(ceilingHeight(changed, 'open-light') - (ground.height - .3 - .006)) < 1e-9);
-  assert.ok(ceilingHeight(changed, 'covered-light') > mountedHeight);
+  assert.equal(ceilingHeight(changed, 'covered-light'), -Infinity);
   upper.slab.thickness = .05;
-  const thinner = modelFaces(project, ground.id, false, options);
+  const thinner = modelFaces(project, ground.id, false, { ...options, scope: 'all' });
   assert.ok(Math.abs(ceilingHeight(thinner, 'open-light') - (ground.height - .05 - .006)) < 1e-9);
+});
+
+test('3D floor circuits stay in the slab and do not bridge uncovered gaps', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const level = project.levels[0];
+  level.rooms.push(makeRoom('living', 0, 0, 2, 3), makeRoom('bedroom', 4, 0, 2, 3));
+  level.services = { electrical: {
+    nodes: [
+      { id: 'first', kind: 'outlet', x: .5, y: 1.5, mount: 'floor' },
+      { id: 'last', kind: 'outlet', x: 5.5, y: 1.5, mount: 'floor' },
+    ],
+    runs: [{ id: 'split-run', medium: 'power', from: 'first', to: 'last', points: [] }],
+  } };
+  const route = (cutaway) => modelFaces(project, level.id, cutaway, { services: ['electrical'] })
+    .filter(({ owner }) => owner?.id === 'split-run');
+  const cut = route(true);
+  const west = cut.filter(({ points }) => points.every(([x]) => x <= 2.001));
+  const east = cut.filter(({ points }) => points.every(([x]) => x >= 3.999));
+  assert.ok(west.length && east.length);
+  assert.equal(cut.length, west.length + east.length);
+  assert.ok(cut.every(({ points }) => points.every(([, , z]) => z >= 0 && z < .02)));
+  const closed = route(false);
+  assert.equal(closed.length, cut.length);
+  assert.ok(closed.every(({ points }) => points.every(([, , z]) => z < 0 && z > -.05)));
+});
+
+test('3D wall chases stop at the cut and do not pass through openings', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const level = project.levels[0];
+  level.rooms.push(makeRoom('living', 0, 0, 6, 4));
+  const wall = makeWall(0, 0, 6, 0, .24);
+  level.walls.push(wall);
+  const opening = makeItem('window', 3, 0);
+  opening.opening = { sill: .35, height: .65 };
+  level.items.push(opening);
+  const wallNode = (id, kind, fraction) => ({ id, kind, x: 0, y: 0, mount: 'wall', wall: { wallId: wall.id, side: 1, fraction } });
+  level.services = { electrical: {
+    nodes: [wallNode('board', 'panel', .2), wallNode('board-over-opening', 'panel', .5),
+      wallNode('socket', 'outlet', .85)],
+    runs: [
+      { id: 'clear-drop', medium: 'power', from: 'board', to: 'socket', points: [] },
+      { id: 'opening-drop', medium: 'power', from: 'board-over-opening', to: 'socket', points: [] },
+    ],
+  } };
+  const faces = modelFaces(project, level.id, true, { services: ['electrical'], simulator: { sectionHeight: .8, site: false } });
+  assert.ok(!faces.some(({ owner }) => owner?.id.startsWith('board')));
+  assert.ok(faces.some(({ owner }) => owner?.id === 'socket'));
+  const clear = faces.filter(({ owner, points }) => owner?.id === 'clear-drop' &&
+    points.every(([x]) => Math.abs(x - 1.2) < .03) && points.some(([, , height]) => height > .02));
+  assert.ok(clear.some(({ points }) => points.some(([, , height]) => Math.abs(height - .8) < 1e-6)));
+  assert.ok(clear.flatMap(({ points }) => points).every(([, y, height]) => Math.abs(y - .12) < .007 && height <= .8));
+  assert.ok(!faces.some(({ owner, points }) => owner?.id === 'opening-drop' &&
+    points.every(([x]) => Math.abs(x - 3) < .03) && points.some(([, , height]) => height > .02)));
+});
+
+test('3D ceiling runs split at changes in the actual underside and remain hidden across voids', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const level = project.levels[0];
+  level.rooms.push(makeRoom('living', 0, 0, 8, 2));
+  level.services = { vmc: {
+    nodes: [
+      { id: 'unit', kind: 'unit', x: .5, y: 1, mount: 'ceiling' },
+      { id: 'vent', kind: 'supplyVent', x: 7.5, y: 1, mount: 'ceiling' },
+    ],
+    runs: [{ id: 'ceiling-run', medium: 'supply', from: 'unit', to: 'vent', points: [] }],
+  } };
+  const upper = makeLevel('Terrace');
+  upper.slab = { mode: 'custom', thickness: .30, footprint: { x: 0, y: 0, width: 2, depth: 2 } };
+  upper.rooms.push(makeRoom('outdoor', 4, 0, 2, 2));
+  project.levels.push(upper);
+  const options = { services: ['vmc'], roof: false, simulator: { materials: 'technical', site: false } };
+  const runFaces = modelFaces(project, upper.id, false, options).filter(({ owner }) => owner?.id === 'ceiling-run');
+  const west = runFaces.filter(({ points }) => points.every(([x]) => x <= 2.001));
+  const east = runFaces.filter(({ points }) => points.every(([x]) => x >= 3.999 && x <= 6.001));
+  assert.ok(west.length);
+  assert.ok(east.length);
+  assert.equal(runFaces.length, west.length + east.length);
+  assert.ok(west.flatMap(({ points }) => points).every(([, , z]) => Math.abs(z - (level.height - .30)) < .01));
+  assert.ok(east.flatMap(({ points }) => points).every(([, , z]) => Math.abs(z - (level.height - .17)) < .01));
+  assert.ok(modelFaces(project, level.id, true, options).every(({ owner }) => owner?.system !== 'vmc'));
+
+  level.ceiling = true;
+  const roofless = modelFaces(project, level.id, false, { ...options, roof: true });
+  const ownCeiling = roofless.filter(({ owner }) => owner?.id === 'ceiling-run');
+  assert.ok(ownCeiling.length);
+  assert.ok(ownCeiling.flatMap(({ points }) => points).every(([, , z]) => Math.abs(z - (level.height - .06)) < .01));
+});
+
+test('3D outdoor units rest on terrain and buried leads are not shown crossing exterior air', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const level = project.levels[0];
+  level.rooms.push(makeRoom('living', 0, 0, 4, 4));
+  level.services = { airConditioning: {
+    nodes: [
+      { id: 'outdoor', kind: 'outdoorUnit', x: -.42, y: 1, mount: 'floor' },
+      { id: 'indoor', kind: 'indoorUnit', x: 1.5, y: 1, mount: 'floor' },
+    ],
+    runs: [{ id: 'outside-lead', medium: 'refrigerant', surface: 'floor', from: 'outdoor', to: 'indoor', points: [] }],
+  } };
+  const model = (site) => modelFaces(project, level.id, true, { services: ['airConditioning'], simulator: { site } });
+  const exposed = model(true);
+  const fixture = exposed.filter(({ owner }) => owner?.id === 'outdoor');
+  assert.ok(fixture.length);
+  assert.ok(Math.abs(Math.min(...fixture.flatMap(({ points }) => points.map(([, , z]) => z))) + .182) < 1e-8);
+  const leads = exposed.filter(({ owner }) => owner?.id === 'outside-lead');
+  assert.ok(leads.length);
+  assert.ok(leads.flatMap(({ points }) => points).every(([x, , z]) => x >= -.001 && z >= 0 && z < .02));
+  assert.ok(!model(false).some(({ owner }) => owner?.id === 'outdoor'));
 });
 
 test('A custom slab extends past the rooms and removes flooring over uncovered areas', () => {

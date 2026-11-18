@@ -231,6 +231,8 @@ export function modelFaces(project, levelId, cutaway, {
   const serviceFaces = [];
   const displayedServices = new Set(services);
   const ceilingSlabDepth = .06;
+  const groundHeight = settings ? -.188 : -.19;
+  const showSite = (settings?.site ?? site) && (!cutaway || settings) && scope !== 'level';
   const slabs = new Map();
   let owner = null;
   const isSelected = () => owner && owner.kind === selected?.kind && owner.id === selected.id && owner.levelId === levelId;
@@ -263,6 +265,26 @@ export function modelFaces(project, levelId, cutaway, {
   function slabGeometry(level) {
     if (!slabs.has(level)) slabs.set(level, { ...slabFor(level), footprints: slabFootprints(level) });
     return slabs.get(level);
+  }
+
+  function surfaceRooms(level, terraces) {
+    return level.rooms.filter(({ type }) => (type === 'outdoor') === terraces)
+      .map(({ x, y, w, h }) => ({ x, y, width: w, depth: h }));
+  }
+
+  function terrainArea(casters) {
+    if (!casters.length) return null;
+    let left = Infinity, right = -Infinity, front = Infinity, back = -Infinity;
+    for (const { points } of casters) {
+      for (const [x, y] of points) {
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        front = Math.min(front, y);
+        back = Math.max(back, y);
+      }
+    }
+    const edge = .85; // Stay inside the smallest site margin, including the equipment footprint.
+    return { x: left - edge, y: front - edge, width: right - left + edge * 2, depth: back - front + edge * 2, z: groundHeight };
   }
 
   function structuralSlab(level, slab, z) {
@@ -574,28 +596,38 @@ export function modelFaces(project, levelId, cutaway, {
     }
     if (displayedServices.size) {
       const upperLevel = project.levels[project.levels.indexOf(level) + 1];
-      const upperSlab = upperLevel && slabGeometry(upperLevel);
-      const ceilingHeightAt = ({ x, y }) => {
-        const covered = upperSlab?.footprints.some((area) => x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.depth);
-        const underTerrace = upperLevel?.rooms?.some((room) => room.type === 'outdoor' && x >= room.x && x <= room.x + room.w && y >= room.y && y <= room.y + room.h);
-        const underside = Math.max(covered ? upperSlab.thickness : 0, underTerrace ? slabLimits.defaultThickness : 0,
-          level.ceiling ? ceilingSlabDepth : 0) || ceilingSlabDepth;
-        return floorZ + level.height - underside;
-      };
-      appendModelServices(serviceFaces, level, floorZ, displayedServices, selectedService, ceilingHeightAt);
+      const ceilingPlanes = [];
+      if (visibleLevels.includes(upperLevel)) {
+        const upperSlab = slabGeometry(upperLevel);
+        ceilingPlanes.push(
+          { z: floorZ + level.height - upperSlab.thickness, areas: upperSlab.footprints },
+          { z: floorZ + level.height - slabLimits.defaultThickness, areas: surfaceRooms(upperLevel, true) },
+        );
+      }
+      if (!cutaway && showRoof && level === topLevel && level.ceiling) {
+        ceilingPlanes.push({ z: floorZ + level.height - ceilingSlabDepth, areas: surfaceRooms(level, false) });
+      }
+      ceilingPlanes.sort((a, b) => a.z - b.z);
+      appendModelServices(serviceFaces, level, floorZ, displayedServices, selectedService, {
+        ceilingPlanes, floorAreas: [...slab.footprints, ...surfaceRooms(level, true)],
+        terrain: showSite && floorZ === 0 ? terrainArea(faces.slice(baseFaces)) : null, openings,
+        exposeFloor: sectioned || (!showRoof && level === topLevel),
+        exposeCeiling: settings?.materials === 'technical',
+        sectionTop: sectioned ? floorZ + (settings?.sectionHeight ?? 1.12) : Infinity,
+      });
     }
     floorZ += level.height;
     owner = null;
     if (level === topLevel && !cutaway && showRoof && ['flat', 'gable', 'hipped'].includes(level.roof)) roof(level, floorZ);
   }
-  if ((settings?.site ?? site) && (!cutaway || settings) && scope !== 'level' && faces.length) {
+  if (showSite && faces.length) {
     if (settings) siteSurfaces(faces.slice());
     else legacySite();
   }
   return serviceFaces.length ? faces.concat(serviceFaces) : faces;
 
   function siteSurfaces(casters) {
-    const ground = -.188;
+    const ground = groundHeight;
     let left = Infinity, right = -Infinity, front = Infinity, back = -Infinity;
     for (const { points } of casters) {
       for (const [x, y] of points) {
@@ -636,7 +668,7 @@ export function modelFaces(project, levelId, cutaway, {
 
   function legacySite() {
     const pad = 1.05;
-    const ground = -.19;
+    const ground = groundHeight;
     const shadowColor = '#53563f';
     const exposed = faces.filter(({ owner }) => !owner || owner.kind === 'walls' || owner.kind === 'slab');
     let left = Infinity, right = -Infinity, front = Infinity, back = -Infinity;

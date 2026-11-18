@@ -92,12 +92,18 @@ test('Service tool generates chosen schemes on specified floors and adjusts rout
   assert.deepEqual([...new Set(current.runs.map(({ medium }) => medium))].sort(), ['cold', 'drain', 'hot']);
   const run = current.runs[0];
   const adjustment = { op: 'edit', system: 'plumbing', levelId: 'ground-services', changes: [
-    { op: 'update_run', id: run.id, run: { points: [{ x: 3, y: 2 }], label: 'Coordenação' } },
+    { op: 'update_run', id: run.id, run: { points: [{ x: 3, y: 2 }], label: 'Coordenação', surface: 'ceiling' } },
   ] };
   const adjusted = tool([adjustment], planned.project);
   const editedRun = adjusted.project.levels[0].services.plumbing.runs.find(({ id }) => id === run.id);
   assert.deepEqual(editedRun.points, [{ x: 3, y: 2 }]);
   assert.equal(editedRun.label, 'Coordenação');
+  assert.equal(editedRun.surface, 'ceiling');
+  const automatic = tool([{ ...adjustment, changes: [{ op: 'update_run', id: run.id, run: { surface: null } }] }], adjusted.project);
+  assert.equal(Object.hasOwn(automatic.project.levels[0].services.plumbing.runs.find(({ id }) => id === run.id), 'surface'), false);
+  const effective = automatic.analysis.levels[0].services.plumbing.runs.find(({ id }) => id === run.id);
+  assert.equal(effective.surface, 'floor');
+  assert.deepEqual(effective.points, [{ x: 3, y: 2 }]);
   assert.deepEqual(adjusted.project.levels[0].services.vmc, planned.project.levels[0].services.vmc);
   assert.throws(() => tool([adjustment, { ...adjustment, changes: [{ op: 'delete_run', id: 'missing-run' }] }], planned.project));
   assert.notEqual(planned.project.levels[0].services.plumbing.runs[0].label, 'Coordenação');

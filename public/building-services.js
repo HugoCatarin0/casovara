@@ -1,4 +1,9 @@
 import { elements } from './object-catalog.js';
+import {
+  createServiceSurfaceRouter, isServiceExteriorNode, serviceRouteSurfaces, serviceRunSurface,
+  serviceSurfaceFootprints, supportedRouteSpans,
+} from './service-routing.js';
+import { slabFootprints } from './slab.js';
 
 function service(pt, en, color, media, kinds) {
   return {
@@ -143,6 +148,7 @@ function tidyRun(input, system, nodes) {
   if (input.medium === 'serviceFeed' && nodes.get(input.from).kind === nodes.get(input.to).kind) return null;
   const label = text(input.label);
   return { id: input.id, medium: input.medium, from: input.from, to: input.to, points: (input.points ?? []).map(position),
+    ...(serviceRouteSurfaces.includes(input.surface) ? { surface: input.surface } : {}),
     ...(label ? { label } : {}),
   };
 }
@@ -368,27 +374,39 @@ function roomNode(add, kind, room, fx, fy) {
   return add(kind, identify(room, at(room, fx, fy)));
 }
 
-function serviceBuilder(level, system) {
+function serviceBuilder(level, systemId, system) {
   const graph = emptyNetwork();
   const snapping = prepareWallSnapping(level);
+  const routers = new Map();
   const clamp = (value) => Math.max(-serviceLimits.coordinate, Math.min(serviceLimits.coordinate, value));
   const safe = (point) => position({ x: clamp(point.x), y: clamp(point.y) });
   return {
     network: graph,
-    add(kind, p, { count, phase, threshold = Infinity } = {}) {
+    add(kind, p, { count, phase, threshold = Infinity, onSlab = null } = {}) {
       const defaultMount = system.kinds[kind].defaultMount;
-      const anchor = defaultMount === 'wall' && snapToWall(snapping, p, {
+      const target = defaultMount === 'wall' && snapToWall(snapping, p, {
         roomId: p.roomId, exterior: exteriorKinds.has(kind), threshold, occupied: graph.nodes,
       });
+      const anchor = target && (!onSlab || onSlab.some((area) => target.x >= area.x && target.x <= area.x + area.width &&
+        target.y >= area.y && target.y <= area.y + area.depth)) ? target : null;
       const node = {
         id: 'n' + (graph.nodes.length + 1), kind, ...safe(p), roomId: p.roomId,
-        mount: defaultMount === 'wall' ? 'free' : defaultMount, ...anchor, count, phase,
+        mount: onSlab ? 'floor' : defaultMount === 'wall' ? 'free' : defaultMount, ...anchor, count, phase,
       };
       graph.nodes.push(node);
       return node;
     },
     link(medium, from, to, points = orthogonal(from, to)) {
-      graph.runs.push({ id: 'r' + (graph.runs.length + 1), medium, from: from.id, to: to.id, points: points.map(safe) });
+      let bends = points.map(safe);
+      if (medium !== 'loop') {
+        const surface = serviceRunSurface(systemId, { medium });
+        if (!routers.has(surface)) routers.set(surface, createServiceSurfaceRouter(serviceSurfaceFootprints(level, surface)));
+        const path = routers.get(surface)([from, ...bends, to], {
+          exteriorFrom: isServiceExteriorNode(from), exteriorTo: isServiceExteriorNode(to),
+        });
+        if (path.length <= serviceLimits.points + 2) bends = path.slice(1, -1).map(safe);
+      }
+      graph.runs.push({ id: 'r' + (graph.runs.length + 1), medium, from: from.id, to: to.id, points: bends });
     },
   };
 }
@@ -529,12 +547,20 @@ function airConditioning(level, rooms, { add, link }) {
 
 const canHeat = (room) => (isHabitable(room) || isWet(room)) && room.w >= 1.2 && room.h >= 1.2;
 
-function radiantFloor(_level, rooms, { add, link }) {
+function radiantFloor(level, rooms, { add, link }) {
   const heated = rooms.filter(canHeat);
-  if (!heated.length) return;
-  const passage = rooms.find(({ type }) => type === 'circulation') ?? heated[0];
-  const manifold = roomNode(add, 'manifold', passage, .15, .20);
-  for (const room of heated) {
+  const slabs = slabFootprints(level);
+  const coveredArea = (room, minimum) => slabs.flatMap((slab) => {
+    const x = Math.max(room.x, slab.x), y = Math.max(room.y, slab.y);
+    const w = Math.min(room.x + room.w, slab.x + slab.width) - x;
+    const h = Math.min(room.y + room.h, slab.y + slab.depth) - y;
+    return w >= minimum && h >= minimum ? [{ ...room, x, y, w, h }] : [];
+  });
+  const zones = heated.flatMap((room) => coveredArea(room, 1.2));
+  if (!zones.length) return;
+  const passage = rooms.filter(({ type }) => type === 'circulation').flatMap((room) => coveredArea(room, .35))[0] ?? zones[0];
+  const manifold = add('manifold', identify(passage, at(passage, .15, .20)), { onSlab: slabs });
+  for (const room of zones) {
     const xCount = room.w >= 6 ? 2 : 1;
     const yCount = room.h >= 6 ? 2 : 1;
     for (let ix = 0; ix < xCount; ix++) {
@@ -566,7 +592,7 @@ export function generateServices(level, systemId, { includeEntry = true, phase =
   const system = checkSystem(systemId);
   if (typeof includeEntry !== 'boolean' || !servicePhases.includes(phase)) throw new Error('Invalid installation generation options.');
   const rooms = roomsOf(level);
-  const build = serviceBuilder(level, system);
+  const build = serviceBuilder(level, systemId, system);
   if (rooms.length) generators[systemId](level, rooms, build, { includeEntry, phase });
   if (build.network.nodes.length > serviceLimits.nodes || build.network.runs.length > serviceLimits.runs) {
     throw new Error('This installation proposal is too large. Generate on a smaller storey or draw part of the network manually.');
@@ -647,6 +673,7 @@ export function applyServiceOperations(level, systemId, operations) {
         break;
       case 'add_run': {
         if (runs.size >= serviceLimits.runs || !record(edit.run)) throw new Error('Invalid installation run.');
+        if (edit.run.surface != null && !serviceRouteSurfaces.includes(edit.run.surface)) throw new Error('Invalid installation route surface.');
         const id = suppliedId(edit.run.id, 'r', nodes, runs);
         const run = tidyRun({ ...edit.run, id }, system, nodes);
         if (!run) throw new Error('Invalid installation run or incompatible endpoint.');
@@ -655,6 +682,7 @@ export function applyServiceOperations(level, systemId, operations) {
       }
       case 'update_run': {
         if (!runs.has(edit.id) || !record(edit.run)) throw new Error('Unknown installation run.');
+        if (edit.run.surface != null && !serviceRouteSurfaces.includes(edit.run.surface)) throw new Error('Invalid installation route surface.');
         const run = tidyRun({ ...runs.get(edit.id), ...edit.run, id: edit.id }, system, nodes);
         if (!run) throw new Error('Invalid installation run or incompatible endpoint.');
         runs.set(edit.id, run);
@@ -705,16 +733,29 @@ export function inspectServices(level, systemId, { includeEntry = true } = {}) {
   const nodes = new Map(visibleNodes.map((node) => [node.id, node]));
   const roomMap = new Map((level?.rooms ?? []).map((room) => [room.id, room]));
   const lengths = Object.fromEntries(Object.keys(system.media).map((medium) => [medium, 0]));
+  const footprints = new Map();
+  const runs = [];
   const attached = new Set();
   const warnings = [];
   for (const run of network.runs) {
-    const route = [nodes.get(run.from), ...run.points, nodes.get(run.to)];
+    const from = nodes.get(run.from);
+    const to = nodes.get(run.to);
+    const route = [from, ...run.points, to];
+    const surface = serviceRunSurface(systemId, run);
+    if (!footprints.has(surface)) footprints.set(surface, serviceSurfaceFootprints(level, surface));
+    const spans = supportedRouteSpans(route, footprints.get(surface), {
+      exteriorFrom: isServiceExteriorNode(from), exteriorTo: isServiceExteriorNode(to),
+    });
     let length = 0;
     for (let i = 1; i < route.length; i++) length += distance(route[i - 1], route[i]);
     lengths[run.medium] += length;
     attached.add(run.from);
     attached.add(run.to);
     if (length < .001) warnings.push(warning('zero_length', 'Um traçado tem comprimento nulo.', 'A run has zero length.', { runId: run.id }));
+    if (spans.some((span) => !span.supported && !span.exterior)) {
+      warnings.push(warning('unsupported_surface', 'O traçado atravessa uma zona sem a superfície de instalação selecionada.', 'The run crosses an area without its selected installation surface.', { runId: run.id }));
+    }
+    runs.push({ ...run, surface });
   }
   if (!network.nodes.length) {
     warnings.push(roomsOf(level).length
@@ -745,5 +786,5 @@ export function inspectServices(level, systemId, { includeEntry = true } = {}) {
     if (node.roomId && !room) warnings.push(warning('missing_room', 'A divisão associada a este ponto já não existe.', 'The room associated with this point no longer exists.', { nodeId: node.id }));
     if (room && !contains(room, node, .09)) warnings.push(warning('outside_room', 'O ponto está fora da divisão associada.', 'The point is outside its associated room.', { nodeId: node.id }));
   }
-  return { ...network, nodes: visibleNodes, lengths: Object.fromEntries(Object.entries(lengths).map(([key, length]) => [key, metres(length)])), warnings: warnings.slice(0, 100) };
+  return { nodes: visibleNodes, runs, lengths: Object.fromEntries(Object.entries(lengths).map(([key, length]) => [key, metres(length)])), warnings: warnings.slice(0, 100) };
 }
