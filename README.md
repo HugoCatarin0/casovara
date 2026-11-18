@@ -22,6 +22,35 @@ Use `Ctrl/⌘ + K` para localizar ferramentas, compartimentos e vãos, ou `1`, `
 
 O painel **Ambiente 3D** controla a apresentação em Materiais, Maquete ou Técnico, a altura do corte, o terreno, o mobiliário e as sombras. As vistas guardadas incluem estes controlos. As predefinições de luz usam a direção e a altura solar escolhidas no painel para estudos visuais.
 
+## Biblioteca de objetos
+
+Abra **Elementos** na barra do editor para pesquisar objetos por nome, navegar por categoria ou mudar de catálogo. Escolha um objeto e coloque-o na planta. Para orientar um objeto já colocado, selecione-o e arraste a pega circular. O ângulo também pode ser editado no painel de propriedades ou com as setas quando a pega está focada. **Desfazer** repõe a orientação anterior.
+
+O plugin IKEA Portugal tem uma seleção de referências com medidas e ligações às páginas dos artigos. A planta guarda o código, nome e dimensões do artigo e usa a geometria esquemática do Casovara. A fonte de cada catálogo é independente do formato dos projetos. [Catálogo IKEA Portugal](https://www.ikea.com/pt/pt/cat/moveis-fu001/)
+
+Para disponibilizar um catálogo IKEA Portugal fornecido para este fim, guarde `ikea-pt.json` em `data/catalogs/` ou no diretório indicado por `CASOVARA_CATALOG_DIR`. O ficheiro substitui a seleção incluída. Declare `coverage` como `full` para um catálogo completo ou `selection` para uma parte dele. As dimensões estão em metros. O campo `type` corresponde a um modelo do Casovara. Use identificadores de artigo únicos e, se estiver disponível, o URL HTTPS da ficha IKEA em Portugal.
+
+```json
+{
+  "version": 1,
+  "coverage": "selection",
+  "items": [
+    {
+      "productId": "80213074",
+      "name": { "pt": "MICKE · Secretária", "en": "MICKE · Desk" },
+      "type": "desk",
+      "category": "office",
+      "width": 1.05,
+      "depth": 0.5,
+      "height": 0.75,
+      "url": "https://www.ikea.com/pt/pt/p/micke-secretaria-branco-80213074/"
+    }
+  ]
+}
+```
+
+Para acrescentar outro fornecedor, registe as categorias em `public/catalog-plugins.js` e a fonte de dados em `catalog-service.js`. O serviço valida o catálogo, pesquisa em português e inglês e entrega os resultados em páginas ao editor.
+
 ## Assistente de projeto
 
 Abra **Assistente IA** no editor e descreva uma casa ou uma alteração à planta aberta. O assistente usa as ferramentas de desenho da aplicação para criar uma proposta editável. Reveja a planta por piso, as alterações e os avisos. **Aplicar à planta** guarda a alteração no histórico do editor, onde pode usar **Desfazer**. Com a opção **Experimentar um T3**, este fluxo funciona localmente com um exemplo predefinido.
@@ -51,6 +80,7 @@ Uma ligação de partilha concede acesso a uma cópia da versão guardada no mom
 | `PORT` | `3000` | Porta HTTP |
 | `HOST` | `127.0.0.1` | Endereço do servidor |
 | `CASOVARA_DATA_DIR` | `<repositório>/data` | Diretório dos projetos |
+| `CASOVARA_CATALOG_DIR` | `<CASOVARA_DATA_DIR>/catalogs` | Diretório dos catálogos fornecidos |
 | `NODE_ENV` | Desenvolvimento | Define o cache de ficheiros estáticos em produção |
 
 Para publicar, ligue o servidor Node.js a um volume persistente e a um proxy HTTPS. O proxy pode encaminhar o protocolo por `X-Forwarded-Proto` e o país por `CF-IPCountry`, `X-Vercel-IP-Country` ou `CloudFront-Viewer-Country`. Ambos os domínios podem apontar para a mesma instância. Para que os utilizadores abram os mesmos projetos de qualquer domínio, configure o domínio alternativo para redirecionar para o principal, preservando o caminho e os parâmetros. Um cookie de sessão fica limitado ao domínio em que foi emitido.

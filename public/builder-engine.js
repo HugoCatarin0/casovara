@@ -1,6 +1,9 @@
 import { furnitureModel, shade } from './model-furniture.js';
+import { elements, normalizeObjectCatalogRef } from './object-catalog.js';
 import { groundShadow, lightSurface, simulatorDefaults, sunSurfaceColor, sunVector } from './simulator.js';
 import { effectiveWallHeight, openingVertical, wallAppearance, wallBaseOffset } from './wall-spec.js';
+
+export { elements } from './object-catalog.js';
 
 export const roomStyles = {
   living: { fill: '#e4e8d9', floor: '#9fae8a', pt: 'Sala', en: 'Living room' },
@@ -9,25 +12,6 @@ export const roomStyles = {
   bath: { fill: '#dce7e4', floor: '#98b5b1', pt: 'Casa de banho', en: 'Bathroom' },
   circulation: { fill: '#eae6dd', floor: '#b8ae99', pt: 'Circulação', en: 'Circulation' },
   outdoor: { fill: '#edede3', floor: '#b5b99c', pt: 'Exterior', en: 'Outdoor' },
-};
-
-export const elements = {
-  door: { pt: 'Porta', en: 'Door', width: 0.9, depth: 0.12, color: '#a76c4b', opening: true },
-  doubleDoor: { pt: 'Porta dupla', en: 'Double door', width: 1.6, depth: 0.12, color: '#a76c4b', opening: true },
-  window: { pt: 'Janela', en: 'Window', width: 1.2, depth: 0.14, color: '#508d89', opening: true },
-  slidingWindow: { pt: 'Janela de correr', en: 'Sliding window', width: 2.2, depth: 0.14, color: '#508d89', opening: true },
-  sofa: { pt: 'Sofá', en: 'Sofa', width: 2.3, depth: 0.89, height: 0.78, color: '#879879' },
-  table: { pt: 'Mesa', en: 'Dining table', width: 1.55, depth: 0.88, height: 0.76, color: '#a98a64' },
-  bed: { pt: 'Cama de casal', en: 'Double bed', width: 1.65, depth: 2, height: 0.53, color: '#b88979' },
-  singleBed: { pt: 'Cama individual', en: 'Single bed', width: 0.95, depth: 2, height: 0.53, color: '#b88979' },
-  cupboard: { pt: 'Armário', en: 'Cupboard', width: 1.5, depth: 0.56, height: 1.82, color: '#9b7a58' },
-  kitchen: { pt: 'Bancada', en: 'Kitchen unit', width: 2.35, depth: 0.64, height: 0.9, color: '#a78c6f' },
-  bath: { pt: 'Banheira', en: 'Bathtub', width: 1.65, depth: 0.75, height: 0.58, color: '#91aaa6' },
-  shower: { pt: 'Duche', en: 'Shower', width: 0.9, depth: 0.9, height: 0.15, color: '#91aaa6' },
-  toilet: { pt: 'Sanita', en: 'Toilet', width: 0.39, depth: 0.68, height: 0.46, color: '#91aaa6' },
-  tree: { pt: 'Árvore', en: 'Tree', width: 1.4, depth: 1.4, height: 2.1, color: '#78906c' },
-  stair: { pt: 'Escadas', en: 'Stairs', width: 1.0, depth: 3.5, height: 2.7, color: '#c1a37d' },
-  rail: { pt: 'Guarda', en: 'Railing', width: 2.4, depth: 0.12, height: 1.05, color: '#8c7d6d' },
 };
 
 export const templateKeys = ['courtyard', 'studio', 'blank'];
@@ -125,11 +109,17 @@ export function normalizeProject(input, systemIds, isPt) {
       id: uniqueId(wall.id, used), x1: numeric(wall.x1, 0), y1: numeric(wall.y1, 0),
       x2: numeric(wall.x2, 0), y2: numeric(wall.y2, 0), thickness: numeric(wall.thickness, 0.15, 0.05, 1.5),
     })).filter((wall) => wallLength(wall) > 0.01),
-    items: list(level.items).filter((item) => Object.hasOwn(elements, item.type)).map((item) => ({
-      id: uniqueId(item.id, used), type: item.type, x: numeric(item.x, 0), y: numeric(item.y, 0),
-      width: numeric(item.width, elements[item.type].width, 0.1, 20), depth: numeric(item.depth, elements[item.type].depth, 0.05, 20),
-      angle: numeric(item.angle, 0, -360, 360),
-    })),
+    items: list(level.items).filter((item) => Object.hasOwn(elements, item.type)).map((item) => {
+      const profile = elements[item.type];
+      const catalogRef = !profile.opening && normalizeObjectCatalogRef(item.catalogRef);
+      return {
+        id: uniqueId(item.id, used), type: item.type, x: numeric(item.x, 0), y: numeric(item.y, 0),
+        width: numeric(item.width, profile.width, 0.1, 20), depth: numeric(item.depth, profile.depth, 0.05, 20),
+        angle: numeric(item.angle, 0, -360, 360),
+        ...(!profile.opening && Number.isFinite(item.height) ? { height: numeric(item.height, profile.height, .01, 12) } : {}),
+        ...(catalogRef ? { catalogRef } : {}),
+      };
+    }),
     measurements: list(level.measurements).map((measure) => ({
       id: uniqueId(measure.id, used), x1: numeric(measure.x1, 0), y1: numeric(measure.y1, 0), x2: numeric(measure.x2, 0), y2: numeric(measure.y2, 0),
     })),
@@ -454,7 +444,7 @@ export function modelFaces(project, levelId, cutaway, { scope = 'through', roof:
         }
         continue;
       }
-      if (settings && !settings.furniture && !['stair', 'rail', 'tree'].includes(item.type)) continue;
+      if (settings && !settings.furniture && !type.structural) continue;
       owner = { kind: 'items', id: item.id, levelId: level.id };
       const material = isSelected() ? { ...type, color: '#b67d4a' } : type;
       furnitureModel(item, material, level.height, floorZ, prism, face);

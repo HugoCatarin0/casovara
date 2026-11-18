@@ -8,6 +8,7 @@ import { detectLocale, languagePreferences, locales } from './public/locales.js'
 import { systemById } from './public/core.js';
 import { createDesignAssistant } from './design-assistant.js';
 import { handleMcp } from './mcp-app.js';
+import { createCatalogService } from './catalog-service.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicDir = resolve(root, 'public');
@@ -221,8 +222,10 @@ async function staticResponse(req, res, pathname) {
   return true;
 }
 
-export function createApp({ storagePath = process.env.CASOVARA_DATA_DIR || defaultData, assistant = createDesignAssistant() } = {}) {
+export function createApp({ storagePath = process.env.CASOVARA_DATA_DIR || defaultData, assistant = createDesignAssistant(),
+  catalogDir = process.env.CASOVARA_CATALOG_DIR || resolve(storagePath, 'catalogs') } = {}) {
   const writes = new Map();
+  const browseCatalog = createCatalogService(catalogDir);
   const sharesDir = resolve(storagePath, '_shares');
   const sharePath = (token) => resolve(sharesDir, token + '.json');
   function change(path, action) {
@@ -340,7 +343,8 @@ export function createApp({ storagePath = process.env.CASOVARA_DATA_DIR || defau
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     try {
-      const url = decodeURIComponent(new URL(req.url, 'http://localhost').pathname);
+      const requestUrl = new URL(req.url, 'http://localhost');
+      const url = decodeURIComponent(requestUrl.pathname);
       const cookie = cookies(req.headers.cookie);
       const isRead = req.method === 'GET' || req.method === 'HEAD';
 
@@ -348,6 +352,14 @@ export function createApp({ storagePath = process.env.CASOVARA_DATA_DIR || defau
 
       if (url.startsWith('/api/')) {
         if (!isRead && ['same-site', 'cross-site'].includes(req.headers['sec-fetch-site'])) throw new RequestError(403, 'cross_site');
+        if (url.startsWith('/api/catalogs/')) {
+          if (req.method !== 'GET') throw new RequestError(405, 'method_not_allowed');
+          let result;
+          try { result = await browseCatalog(url.slice('/api/catalogs/'.length), requestUrl.searchParams); }
+          catch { throw new RequestError(503, 'catalog_unavailable'); }
+          if (!result) throw new RequestError(404, 'catalog_not_found');
+          return sendJson(res, 200, result);
+        }
         if (url === '/api/assistant') {
           if (req.method === 'GET') return sendJson(res, 200, assistant.status(req));
           if (req.method !== 'POST') throw new RequestError(405, 'method_not_allowed');

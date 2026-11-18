@@ -1,3 +1,7 @@
+import { catalogFurnitureModel } from './catalog-furniture-model.js';
+
+const legacyModelHeights = { bed: .71, singleBed: .71, toilet: .62, tree: 2.30, rail: 1.105 };
+
 export function shade(color, delta) {
   return `#${[1, 3, 5].map((index) => Math.max(0, Math.min(255, Number.parseInt(color.slice(index, index + 2), 16) + delta)).toString(16).padStart(2, '0')).join('')}`;
 }
@@ -5,15 +9,19 @@ export function shade(color, delta) {
 // Catalogue models use the same footprint, orientation and metric scale as the plan symbols.
 export function furnitureModel(item, type, levelHeight, floor, prism, face) {
   const { width, depth, angle, x, y } = item;
+  const modelHeight = item.type === 'stair' ? levelHeight : legacyModelHeights[item.type] ?? type.height;
+  const scaleHeight = !type.model && Number.isFinite(item.height) && item.height > 0
+    ? item.height / modelHeight : 1;
   const sin = Math.sin(angle * Math.PI / 180);
   const cos = Math.cos(angle * Math.PI / 180);
-  const point = (u, v, z) => [x + u * cos - v * sin, y + u * sin + v * cos, floor + z];
+  const point = (u, v, z) => [x + u * cos - v * sin, y + u * sin + v * cos, floor + z * scaleHeight];
   const sx = (u) => (u - .5) * width;
   const sy = (v) => (v - .5) * depth;
   const colors = (base) => [base, shade(base, -14), shade(base, -29)];
-  function block(left, top, right, bottom, z, height, color = type.color) {
+  function block(left, top, right, bottom, z, height, color = type.color, opacity = 1) {
     prism([point(sx(left), sy(top), 0), point(sx(right), sy(top), 0),
-      point(sx(right), sy(bottom), 0), point(sx(left), sy(bottom), 0)], floor + z, height, colors(color));
+      point(sx(right), sy(bottom), 0), point(sx(left), sy(bottom), 0)],
+    floor + z * scaleHeight, height * scaleHeight, colors(color), opacity);
   }
   function legs(left, top, right, bottom, z, height, size, color) {
     const a = Math.min(size / width, (right - left) / 3);
@@ -21,6 +29,26 @@ export function furnitureModel(item, type, levelHeight, floor, prism, face) {
     for (const u of [left, right - a]) {
       for (const v of [top, bottom - b]) block(u, v, u + a, v + b, z, height, color);
     }
+  }
+  function oval(left, top, right, bottom, z, height, color, count = 12) {
+    const cx = (left + right) * .5, cy = (top + bottom) * .5;
+    const rx = (right - left) * .5, ry = (bottom - top) * .5;
+    const vertices = Array.from({ length: count }, (_, index) => {
+      const angle = index * Math.PI * 2 / count;
+      return [sx(cx + Math.cos(angle) * rx), sy(cy + Math.sin(angle) * ry)];
+    });
+    const surface = vertices.map(([a, b]) => point(a, b, z + height));
+    const perimeter = vertices.map(([a, b]) => point(a, b, z));
+    perimeter.forEach((vertex, index) => {
+      const next = (index + 1) % count;
+      face([vertex, perimeter[next], surface[next], surface[index]], shade(color, index % 2 ? -20 : -13));
+    });
+    face(surface, color);
+  }
+
+  if (type.model) {
+    catalogFurnitureModel(item, type, { block, legs, oval, point: (u, v, z) => point(sx(u), sy(v), z), face, shade, levelHeight });
+    return;
   }
 
   switch (item.type) {

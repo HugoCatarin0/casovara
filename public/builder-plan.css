@@ -7,9 +7,13 @@
 .cv-studio[data-tool=select] .cv-draft [data-plan-handle=se] { cursor: nwse-resize; }
 .cv-studio[data-tool=select] .cv-draft [data-plan-handle=ne],
 .cv-studio[data-tool=select] .cv-draft [data-plan-handle=sw] { cursor: nesw-resize; }
-.cv-studio[data-tool=select] .cv-draft :is([data-plan-handle=start], [data-plan-handle=end]) { cursor: grab; }
+.cv-studio[data-tool=select] .cv-draft :is([data-plan-handle=start], [data-plan-handle=end], [data-plan-handle=rotate]) { cursor: grab; }
 .cv-studio[data-tool=select] .cv-draft [data-plan-handle]:active { cursor: grabbing; }
 .cv-studio[data-tool=select] .cv-draft [data-plan-handle]:hover .cv-plan-grip { fill: #a6462c; }
+.cv-studio[data-tool=select] .cv-draft [data-plan-handle=rotate]:hover .cv-rotation-grip { fill: #f2d3c5; }
+.cv-studio[data-tool=select] .cv-draft svg[data-rotating=true],
+.cv-studio[data-tool=select] .cv-draft svg[data-rotating=true] * { cursor: grabbing; }
+.cv-rotation-hint { margin-block: .5rem .8rem; font-size: .79rem; }
 .cv-studio[data-tool=select] .cv-draft .cv-plan-wall:not(.cv-plan-wall-active):hover .cv-plan-wall-line { stroke: #8d553b; }
 .cv-studio .cv-draft svg[data-space-pan=true],
 .cv-studio .cv-draft svg[data-space-pan=true] * { cursor: grab; }

@@ -1,6 +1,7 @@
 import { openBuilderReport } from './builder-report.js';
 import { openBuilderShare } from './builder-share.js';
 import { mountBuilderAssistant } from './builder-assistant.js';
+import { mountObjectLibrary } from './builder-catalog.js';
 import { registerBuilderTools } from './builder-webmcp.js';
 import { estimateProject, formatMoney, formatNumber, projectApi, systems } from './core.js';
 import { makeTemplate, templates } from './templates.js';
@@ -11,6 +12,7 @@ import { createModelViewer, initialModelCamera, modelImage } from './model-viewe
 import { dimensionLine, draftingBounds, draftingInk, interiorPlanDimensions, lowerFloorReference, openingSymbol, openingTags, openingsIndex, overallPlanDimensions, planPatterns, planRoomFill, selectedWallDimension, technicalWall } from './technical-plan.js';
 import { simulatorDefaults, renderSimulatorControls, readSimulatorOption, syncSimulatorControls } from './simulator-controls.js';
 import { normalizeSimulator } from './simulator.js';
+import { furniturePlanSymbol, objectFootprint } from './object-plan-symbol.js';
 import {
   clamp, clone, elements, escapeHtml as esc, findWall, levelBounds, makeItem, makeLevel, makeProject, makeRoom,
   makeWall, modelFaces, normalizeProject, point, projectArea, roomStyles, snapTo, uid, wallLength,
@@ -57,8 +59,6 @@ const icons = {
   grid: '<rect x="4" y="4" width="16" height="16" rx="1"/><path d="M4 9h16M4 15h16M9 4v16m6-16v16"/>',
   roof: '<path d="m3 11 9-7 9 7M5 10v10h14V10m-10 0 3-2 3 2"/>',
   camera: '<path d="M3 7h5l2-3h4l2 3h5v12H3Z"/><circle cx="12" cy="13" r="3"/>',
-  stair: '<path d="M3 20v-4h6v-5h6V6h6V3"/>',
-  rail: '<path d="M3 5h18M6 5v15m6-15v15m6-15v15"/>',
   file: '<path d="M6 3h8l4 4v14H6Zm8 0v5h4M9 12h6m-6 4h6"/>',
   external: '<path d="M13 4h7v7m0-7-9 9m7 0v7H4V6h7"/>',
 };
@@ -91,6 +91,8 @@ const labels = {
   costNote: ['Valores de demonstração para planeamento. Peça um orçamento com base no terreno e no projeto final.', 'Demonstration figures for planning. Request a quote based on the plot and final design.'],
   structure: ['Estrutura', 'Structure'], envelope: ['Envolvente', 'Envelope'], interior: ['Interiores', 'Interiors'], installation: ['Instalações', 'Services'], details: ['Ver estimativa e quantidades', 'View estimate and quantities'],
   width: ['Largura', 'Width'], depth: ['Profundidade', 'Depth'], length: ['Comprimento', 'Length'], thickness: ['Espessura', 'Thickness'], angle: ['Rotação', 'Rotation'], type: ['Tipo', 'Type'], labelName: ['Nome', 'Name'],
+  objectHeight: ['Altura', 'Height'], productLink: ['Ficha do produto', 'Product page'],
+  rotateObject: ['Rodar objeto', 'Rotate object'], rotationHint: ['Arraste a pega ou use ← e → na planta. Durante o arrasto, Shift ajusta a 15° e Alt suspende o ajuste.', 'Drag the handle or use ← and → on the plan. While dragging, Shift snaps to 15° and Alt pauses snapping.'],
   delete: ['Eliminar', 'Delete'], duplicate: ['Duplicar', 'Duplicate'], rotate: ['Rodar 90°', 'Rotate 90°'], newTemplate: ['Criar projeto', 'Create project'], cancel: ['Cancelar', 'Cancel'],
   drawingType: ['Tipo de compartimento', 'Room type'], pointFirst: ['Marque o primeiro ponto na planta.', 'Mark the first point on the plan.'], pointSecond: ['Marque o segundo ponto. Prima Esc para cancelar.', 'Mark the second point. Press Esc to cancel.'],
   chainMore: ['Marque o próximo ponto. Prima Enter para terminar.', 'Pick the next point. Press Enter to finish.'],
@@ -105,16 +107,16 @@ const labels = {
   grid: ['Grelha', 'Grid'], snap: ['Ajustar à grelha', 'Snap to grid'], dimensions: ['Dimensões gerais', 'Overall dimensions'], furniture: ['Mobiliário', 'Furniture'], labels: ['Identificação de divisões', 'Room labels'], settings: ['Opções de visualização', 'Display options'],
   language: ['Idioma', 'Language'], keyboard: ['Atalhos de teclado', 'Keyboard shortcuts'], help: ['Ajuda', 'Help'], fitLabel: ['Enquadrar', 'Fit'],
   toolDeck: ['Mostrar ou recolher ferramentas', 'Show or collapse tools'], inspector: ['Painel de propriedades', 'Properties panel'],
-  drawGroup: ['Desenho', 'Drawing'], navigateGroup: ['Navegação', 'Navigation'], componentsGroup: ['Elementos', 'Elements'], referenceGroup: ['Referência', 'Reference'],
+  drawGroup: ['Desenho', 'Drawing'], navigateGroup: ['Navegação', 'Navigation'], referenceGroup: ['Referência', 'Reference'],
   shortPan: ['Mover', 'Pan'], shortWall: ['Parede', 'Wall'], shortAngled: ['Inclinada', 'Angled'], shortRoom: ['Divisão', 'Room'], shortDetect: ['Detetar', 'Detect'], shortDivide: ['Dividir', 'Divide'], shortImage: ['Imagem base', 'Plan image'],
   planSheet: ['Vista de planta', 'Plan view'], terrainView: ['Vista do modelo', 'Model view'], previewLabel: ['Ambiente 3D', '3D environment'],
   drawingStyle: ['Estilo da planta', 'Plan style'], technical: ['Desenho técnico', 'Technical drawing'], furnished: ['Planta ilustrada', 'Illustrated plan'],
   openingTags: ['Identificadores e medidas dos vãos', 'Opening tags and widths'], wallLayers: ['Camadas e hachuras das paredes', 'Wall layers and hatching'], roomDimensions: ['Cotas por compartimento', 'Room dimensions'], lowerLevel: ['Piso inferior em referência', 'Show floor below'],
-  roomTotal: ['Compartimentos', 'Rooms'], wallTotal: ['Comprimento de paredes', 'Wall length'], itemTotal: ['Objetos colocados', 'Objects placed'], openings: ['Vãos', 'Openings'], groupBath: ['Equipamento e exterior', 'Fixtures and outdoor'],
+  roomTotal: ['Compartimentos', 'Rooms'], wallTotal: ['Comprimento de paredes', 'Wall length'], itemTotal: ['Objetos colocados', 'Objects placed'], openings: ['Vãos', 'Openings'],
   copy: ['Copiar', 'Copy'], csv: ['Descarregar CSV', 'Download CSV'], copied: ['Copiado.', 'Copied.'], copyError: ['Não foi possível copiar.', 'Could not copy.'],
   notesPlaceholder: ['Anote decisões, materiais ou perguntas sobre o projeto.', 'Add decisions, materials, or questions about the project.'], notesLabel: ['Notas do projeto', 'Project notes'],
   outer: ['Laje', 'Slab'], deck: ['Terraço', 'Terrace'], roof: ['Cobertura', 'Roof'], ceiling: ['Teto', 'Ceiling'], floors: ['Pavimentos', 'Floors'], annotate: ['Anotar', 'Annotate'], visualise: ['Visualizar', 'Visualise'],
-  stair: ['Escadas', 'Stairs'], rail: ['Guarda', 'Railing'], image: ['Imagem de referência', 'Reference image'], removeImage: ['Remover imagem de referência', 'Remove reference image'], invalidImage: ['Escolha PNG, JPEG ou WebP até 900 KB.', 'Choose a PNG, JPEG, or WebP up to 900 KB.'],
+  image: ['Imagem de referência', 'Reference image'], removeImage: ['Remover imagem de referência', 'Remove reference image'], invalidImage: ['Escolha PNG, JPEG ou WebP até 900 KB.', 'Choose a PNG, JPEG, or WebP up to 900 KB.'],
   camera: ['Guardar vista', 'Save view'], cameraList: ['Vistas guardadas', 'Saved views'], noCameras: ['Guarde uma vista do modelo para a recuperar mais tarde.', 'Save a model view to return to it later.'],
   applyFinish: ['Clique ou toque num compartimento para aplicar o acabamento.', 'Click or tap a room to apply the finish.'], shutter: ['Elementos', 'Elements'], info: ['Informações de projeto', 'Project information'], splitUpdate: ['Dividir compartimento', 'Divide room'], detectRoom: ['Detetar compartimento', 'Detect room'],
   summary: ['Resumo', 'Summary'], projectStatus: ['Estado do projeto', 'Project status'], referenceControls: ['Imagem em planta', 'Plan image'], imageOpacity: ['Opacidade da imagem', 'Image opacity'], imageWidth: ['Largura à escala', 'Scaled width'],
@@ -125,18 +127,12 @@ const labels = {
   mode: ['Modo de desenho', 'Drawing mode'], reset: ['Terminar desenho', 'Finish drawing'], exportError: ['Não foi possível gerar o ficheiro.', 'Could not generate the file.'],
 };
 const roomTypes = Object.keys(roomStyles);
-const elementGroups = [
-  ['openings', ['door', 'doubleDoor', 'window', 'slidingWindow']],
-  ['furniture', ['sofa', 'table', 'bed', 'singleBed', 'cupboard', 'kitchen']],
-  ['groupBath', ['bath', 'shower', 'toilet', 'tree', 'stair', 'rail']],
-];
 const toolSettings = { select: ['select', 'select'], pan: ['pan', 'pan'], room: ['room', 'room'], wall: ['wall', 'wall'], angled: ['angled', 'angled'], door: ['door', 'door'], window: ['window', 'window'], measure: ['measure', 'measure'], label: ['text', 'label'], divide: ['room', 'splitUpdate'], detect: ['fit', 'detectRoom'], roof: ['roof', 'roof'], ceiling: ['layers', 'ceiling'], flooring: ['grid', 'flooring'], wallChain: ['measure', 'wallChain'], north: ['north', 'north'] };
 const categories = [
-  { id: 'structure', icon: 'plan', tools: ['select', 'pan', 'wall', 'angled', 'room', 'detect', 'divide', 'door', 'window', 'stair', 'rail', 'image'] },
+  { id: 'structure', icon: 'plan', tools: ['select', 'pan', 'wall', 'angled', 'room', 'detect', 'divide', 'image'] },
   { id: 'floors', icon: 'grid', tools: ['detect', 'room', 'divide', 'slab', 'deck', 'flooring'] },
   { id: 'ceiling', icon: 'layers', tools: ['ceiling'] },
   { id: 'roof', icon: 'roof', tools: ['roof'] },
-  { id: 'furniture', icon: 'furnish', tools: ['catalog'] },
   { id: 'annotate', icon: 'measure', tools: ['measure', 'wallChain', 'autoDimensions', 'label', 'north', 'export'] },
   { id: 'visualise', icon: 'camera', tools: ['view3d', 'camera', 'cameraList', 'exportPng'] },
 ];
@@ -145,12 +141,16 @@ const shortcuts = { select: 'V', pan: 'H', wall: 'W', angled: 'A', room: 'R', de
 const structureGroups = [
   ['navigateGroup', ['select', 'pan']],
   ['drawGroup', ['wall', 'angled', 'room', 'detect', 'divide']],
-  ['componentsGroup', ['door', 'window', 'stair', 'rail']],
   ['referenceGroup', ['image']],
 ];
 const fieldForMode = { plan: 'plan', '3d': 'view3d', split: 'split' };
 const modeKeys = { '1': 'plan', '2': 'view3d', '3': 'split' };
 const shortToolLabels = { pan: 'shortPan', wall: 'shortWall', angled: 'shortAngled', room: 'shortRoom', detect: 'shortDetect', divide: 'shortDivide', image: 'shortImage' };
+function normalizedAngle(angle) {
+  const tenths = Math.round(angle * 10);
+  return ((tenths % 3600 + 3600) % 3600) / 10;
+}
+const bearingTo = (center, pointer) => Math.atan2(pointer.y - center.y, pointer.x - center.x) * 180 / Math.PI;
 
 export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/app', setLocale }) {
   const isPt = locale === 'pt-PT';
@@ -183,6 +183,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   let newWallAssembly = 'custom';
   let planOptionsKey = '';
   let objectType = 'door';
+  let catalogPlacement = null;
   let viewMode = Object.hasOwn(fieldForMode, query.get('view')) ? fieldForMode[query.get('view')] : 'plan';
   let selected = null;
   let pendingPoint = null;
@@ -197,7 +198,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   let inspectorTab = 'properties';
   let inspectorOpen = window.matchMedia('(min-width: 1000px)').matches;
   let toolbarOpen = true;
-  let mobileCatalog = false;
+  let catalogOpen = false;
   let vat = 23;
   let allLevels = true;
   let cutaway = query.get('model') !== 'exterior';
@@ -317,7 +318,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
           <button class="cv-inspector-toggle cv-tool" type="button" data-action="inspector" aria-controls="cv-studio-inspector" title="${tr('inspector')}" aria-label="${tr('inspector')}">${icon('dock')}</button>
         </div>
         <div class="cv-tool-deck" id="cv-tool-deck">
-          <div class="cv-drawing-tools" data-role="tools" role="group" aria-label="${tr('mode')}"></div>
+          <div class="cv-tool-deck-bar">
+            <div class="cv-drawing-tools" data-role="tools" role="group" aria-label="${tr('mode')}"></div>
+            <button type="button" class="cv-tool cv-library-trigger" data-action="catalog" aria-expanded="false" aria-controls="cv-object-library" title="${tr('furnish')}">${icon('furnish', 16)}<span>${tr('shutter')}</span></button>
+          </div>
           <div class="cv-plan-options" data-role="plan-options" role="group" aria-label="${tr('drawOptions')}" hidden></div>
         </div>
         <div class="cv-view" data-role="view" data-mode="plan">
@@ -363,6 +367,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         <footer class="cv-stage-footer"><span data-role="hint"></span><span data-role="scale"></span></footer>
       </div>
       <aside class="cv-inspector" id="cv-studio-inspector" aria-label="${tr('inspector')}" data-role="inspector"></aside>
+      <aside class="cv-object-library" id="cv-object-library" aria-labelledby="cv-object-library-title" hidden></aside>
     </main>
     <dialog class="cv-dialog" data-role="dialog"></dialog>
     <input type="file" accept="application/json,.json,.casovara" hidden data-role="file"><input type="file" accept="image/png,image/jpeg,image/webp" hidden data-role="file-image">
@@ -383,6 +388,28 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   const dialog = root.querySelector('[data-role="dialog"]');
   const studioPanel = root.querySelector('[data-role="inspector"]');
   const view = root.querySelector('[data-role="view"]');
+  const catalogButton = toolDeck.querySelector('[data-action="catalog"]');
+  const library = mountObjectLibrary(root.querySelector('#cv-object-library'), {
+    locale,
+    signal: controller.signal,
+    thumb(item) {
+      const margin = Math.max(item.width, item.depth) * .72;
+      const rise = item.type === 'door' ? item.width / 2 : item.type === 'doubleDoor' ? item.width / 4 : 0;
+      return `<svg viewBox="${-margin} ${-margin - rise} ${margin * 2} ${margin * 2}" aria-hidden="true">${itemShape({ ...item, x: 0, y: 0, angle: 0, id: '' }, false, false, [])}</svg>`;
+    },
+    choose(item) {
+      objectType = item.type;
+      catalogPlacement = item.providerId ? {
+        width: item.width,
+        depth: item.depth,
+        ...(item.height ? { height: item.height } : {}),
+        catalogRef: { providerId: item.providerId, productId: item.productId, name: item.name, ...(item.url ? { url: item.url } : {}) },
+      } : null;
+      setTool('item');
+      plane.focus({ preventScroll: true });
+    },
+    close: () => setCatalogOpen(false, true),
+  });
   const assistant = mountBuilderAssistant(root, {
     locale,
     getProject: () => project,
@@ -503,7 +530,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     pendingPoint = null;
     history.length = 0;
     future.length = 0;
-    mobileCatalog = false;
+    setCatalogOpen(false);
     tool = 'select';
     resetCamera();
     viewer.fit();
@@ -592,13 +619,24 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     simulatorPanel.hidden = !visible;
     simulatorToggle.setAttribute('aria-expanded', String(visible));
   }
+  function setCatalogOpen(visible, returnFocus = false) {
+    if (catalogOpen === visible) return;
+    catalogOpen = visible;
+    studio.dataset.catalog = String(visible);
+    catalogButton.setAttribute('aria-expanded', String(visible));
+    inspectorToggle.setAttribute('aria-expanded', String(inspectorOpen && !visible));
+    if (visible) library.open();
+    else {
+      library.close();
+      if (returnFocus) (toolDeck.hidden ? deckToggle : catalogButton).focus({ preventScroll: true });
+    }
+  }
   function updateTools() {
     studio.dataset.tool = tool;
     studio.dataset.inspector = String(inspectorOpen);
-    studio.dataset.catalog = String(mobileCatalog);
     toolDeck.hidden = !toolbarOpen;
     deckToggle.setAttribute('aria-expanded', String(toolbarOpen));
-    inspectorToggle.setAttribute('aria-expanded', String(inspectorOpen));
+    inspectorToggle.setAttribute('aria-expanded', String(inspectorOpen && !catalogOpen));
     const active = categories.find(({ id }) => id === category);
     const categoryRow = root.querySelector('[data-role="categories"]');
     const toolRow = root.querySelector('[data-role="tools"]');
@@ -611,11 +649,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const groups = category === 'structure' ? structureGroups : [['navigateGroup', ['select', 'pan']], [category, active.tools]];
     const renderTool = (id) => {
       const setting = toolSettings[id] || {
-        catalog: ['furnish', 'furnish'], slab: ['room', 'outer'], deck: ['room', 'deck'], stair: ['stair', 'stair'], rail: ['rail', 'rail'], image: ['image', 'image'],
+        slab: ['room', 'outer'], deck: ['room', 'deck'], image: ['image', 'image'],
         view3d: ['cube', 'view3d'], camera: ['camera', 'camera'], cameraList: ['layers', 'cameraList'], export: ['export', 'export'], exportPng: ['image', 'exportPng'], autoDimensions: ['measure', 'autoDimensions'],
       }[id];
-      const action = ['levels', 'image', 'view3d', 'camera', 'cameraList', 'export', 'exportPng', 'autoDimensions', 'roof', 'ceiling', 'flooring', 'catalog'].includes(id) ? id : `tool:${id}`;
-      const pressed = tool === id || (id === 'ceiling' && !!level().ceiling) || (id === 'roof' && !['none', undefined].includes(level().roof)) || (id === 'catalog' && tool === 'item') || (id === 'slab' && tool === 'room' && roomType === 'circulation') || (id === 'deck' && tool === 'room' && roomType === 'outdoor');
+      const action = ['levels', 'image', 'view3d', 'camera', 'cameraList', 'export', 'exportPng', 'autoDimensions', 'roof', 'ceiling', 'flooring'].includes(id) ? id : `tool:${id}`;
+      const pressed = tool === id || (id === 'ceiling' && !!level().ceiling) || (id === 'roof' && !['none', undefined].includes(level().roof)) || (id === 'slab' && tool === 'room' && roomType === 'circulation') || (id === 'deck' && tool === 'room' && roomType === 'outdoor');
       return toolbarButton(action, ...setting, `aria-pressed="${pressed}"`, shortToolLabels[id] ?? true, shortcuts[id]);
     };
     toolRow.innerHTML = groups.map(([label, tools]) => `<div class="cv-tool-group" role="group" aria-label="${tr(label)}"><span class="cv-tool-group-label" aria-hidden="true">${tr(label)}</span><div>${tools.map(renderTool).join('')}</div></div>`).join('');
@@ -629,7 +667,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       ['door', 'window'].includes(tool) || (tool === 'item' && elements[objectType].opening) ? 'placeOpening' :
       tool === 'item' ? 'placeItem' : tool === 'label' || tool === 'north' ? 'placeLabel' :
       tool === 'flooring' ? 'applyFinish' : tool === 'divide' || tool === 'detect' || tool === 'wallChain' ? toolSettings[tool][1] : tool === 'pan' ? 'pan' : 'emptySelect';
-    root.querySelector('[data-role="hint"]').textContent = tr(viewMode === 'view3d' ? 'orbitHint' : hint);
+    const instruction = tr(viewMode === 'view3d' ? 'orbitHint' : hint);
+    root.querySelector('[data-role="hint"]').textContent = viewMode !== 'view3d' && tool === 'item'
+      ? `${catalogPlacement?.catalogRef.name ?? localized(elements[objectType])} · ${instruction}` : instruction;
     root.querySelector('[data-action="finish-drawing"]').hidden = !pendingPoint;
     renderPlanOptions();
   }
@@ -677,9 +717,12 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
 
   function currentModelScene() {
-    const key = [project, revision, project.levelId, cutaway, showRoof, modelScope, selected?.kind, selected?.id, simulator];
+    const rotation = drag?.handle === 'rotate' && drag.preview !== drag.original ? drag.preview : null;
+    const key = [project, revision, project.levelId, cutaway, showRoof, modelScope, selected?.kind, selected?.id, simulator, rotation];
     if (!sceneCache?.key.every((value, index) => value === key[index])) {
-      const faces = modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected, simulator });
+      const preview = rotation ? { ...project, levels: project.levels.map((floor) => floor.id === project.levelId
+        ? { ...floor, items: floor.items.map((item) => item.id === rotation.id ? rotation : item) } : floor) } : project;
+      const faces = modelFaces(preview, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected, simulator });
       sceneCache = { key, scene: compileScene(faces) };
     }
     return sceneCache.scene;
@@ -749,6 +792,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (data.opening) {
       const wall = findWall(item, walls, 0.14, w)?.wall;
       shape = openingSymbol(item, wall?.thickness ?? .15, { active, technical });
+    } else if (data.model) {
+      shape = furniturePlanSymbol(item, data, { stroke, technical });
     } else if (item.type === 'sofa') {
       shape = rect(-w / 2, -h / 2, w, h, '#a4ad95', 0.12) + rect(-w * 0.41, -h * 0.25, w * 0.82, h * 0.66, '#bfcaaf', 0.05) + line(`M0 ${-h * 0.25}V${h * 0.4}`);
     } else if (item.type === 'table') {
@@ -776,7 +821,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     } else {
       shape = rect(-w / 2, -h / 2, w, h, '#d4b895', 0.027) + line(`M0 ${-h / 2}v${h}`);
     }
-    return `<g data-shape="items" data-id="${item.id}" transform="translate(${x} ${y}) rotate(${angle})" ${preview ? 'opacity=".56" pointer-events="none"' : ''}>${shape}${active ? `<rect class="cv-active-shape" x="${-w / 2 - 0.07}" y="${-h / 2 - 0.07}" width="${w + 0.14}" height="${h + 0.14}" fill="none" stroke-width=".045" stroke-dasharray=".12 .08" pointer-events="none"/>` : ''}</g>`;
+    let selection = '';
+    if (active) {
+      const props = 'class="cv-active-shape" fill="none" vector-effect="non-scaling-stroke" stroke-width="2" stroke-linejoin="round" pointer-events="none"';
+      selection = data.opening
+        ? `<rect ${props} x="${-w / 2 - .07}" y="${-h / 2 - .07}" width="${w + .14}" height="${h + .14}" stroke-dasharray="5 3"/>`
+        : `<polygon ${props} points="${objectFootprint(item, data).map(([px, py]) => `${px},${py}`).join(' ')}"/>`;
+    }
+    return `<g data-shape="items" data-id="${item.id}" transform="translate(${x} ${y}) rotate(${angle})" ${preview ? 'opacity=".56" pointer-events="none"' : ''}>${shape}${selection}</g>`;
   }
 
   function measurementShape(measure, active = false, offsets = false, unit = .022) {
@@ -832,7 +884,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const moved = (kind, item) => moving?.id === item.id && moving.kind === kind ? moving.preview : shifted?.[kind]?.get(item.id) ?? item;
     const visibleRooms = current.rooms.map((room) => moved('rooms', room));
     const visibleWalls = current.walls.map((wall) => moved('walls', wall));
-    const visibleItems = current.items.filter((item) => settings.furniture || elements[item.type].opening).map((item) => moved('items', item));
+    const visibleItems = current.items.filter((item) => settings.furniture || elements[item.type].opening || elements[item.type].structural).map((item) => moved('items', item));
     const technical = technicalDrawing();
     const lowerLevel = !forExport && settings.lowerLevel ? project.levels[project.levels.indexOf(current) - 1] : null;
     const reference = lowerFloorReference(lowerLevel, unit);
@@ -859,10 +911,33 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     return [['nw', room.x, room.y], ['ne', room.x + room.w, room.y],
       ['sw', room.x, room.y + room.h], ['se', room.x + room.w, room.y + room.h]];
   }
+
+  function rotationHandle(item, unit) {
+    const offset = item.depth / 2 + (item.type === 'table' ? .21 : 0);
+    const stemStart = elements[item.type].model?.startsWith('sectional') ? 0 : offset;
+    const grip = offset + unit * 29;
+    const accent = draftingInk.accent;
+    const dragging = drag?.handle === 'rotate' && drag.moved;
+    const theta = item.angle * Math.PI / 180;
+    return `<g transform="translate(${item.x} ${item.y})">
+      <g transform="rotate(${item.angle})">
+        <path d="M0 ${stemStart}V${grip}" stroke="${accent}" stroke-width="${unit * 1.6}" stroke-dasharray="${unit * 3} ${unit * 3}" pointer-events="none"/>
+        <g data-plan-handle="rotate" data-shape="items" data-id="${item.id}" transform="translate(0 ${grip})">
+          <title>${tr('rotateObject')}. ${tr('rotationHint')}</title>
+          <circle r="${unit * 22}" fill="transparent" pointer-events="all"/>
+          <circle class="cv-rotation-grip" r="${unit * 9}" fill="#fffaf6" stroke="${accent}" stroke-width="${unit * 1.7}" pointer-events="none"/>
+          <svg x="${-unit * 6}" y="${-unit * 6}" width="${unit * 12}" height="${unit * 12}" viewBox="0 0 24 24" color="${accent}" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" fill="none" pointer-events="none">${icons.rotate}</svg>
+        </g>
+      </g>
+      ${dragging ? `<text x="${-Math.sin(theta) * grip + unit * 14}" y="${Math.cos(theta) * grip}" dy=".34em" font-size="${unit * 13}" font-weight="680" fill="${accent}" paint-order="stroke" stroke="#fffaf6" stroke-width="${unit * 4}" stroke-linejoin="round" pointer-events="none">${n(normalizedAngle(item.angle), 1)}°</text>` : ''}
+    </g>`;
+  }
+
   function selectedHandles(unit) {
-    if (tool !== 'select' || spacePan || !['rooms', 'walls'].includes(selected?.kind)) return '';
-    const active = drag?.type === 'shape' ? drag.preview : entity();
+    if (tool !== 'select' || spacePan || !['rooms', 'walls', 'items'].includes(selected?.kind)) return '';
+    const active = drag?.type === 'shape' && drag.id === selected.id ? drag.preview : entity();
     if (!active) return '';
+    if (selected.kind === 'items') return settings.furniture && !elements[active.type].opening ? rotationHandle(active, unit) : '';
     const handles = selected.kind === 'rooms' ? roomHandles(active) : [['start', active.x1, active.y1], ['end', active.x2, active.y2]];
     return handles.map(([name, x, y]) => `<g data-plan-handle="${name}" data-shape="${selected.kind}" data-id="${active.id}" transform="translate(${x} ${y})">
       <circle r="${unit * 13}" fill="transparent" pointer-events="all"/>
@@ -915,7 +990,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       const snap = entry.opening ? openingAt(hoverPoint, entry, hoverPoint.pointerType) : hoverPoint;
       if (!snap) return drawMarker(hoverPoint, unit, true);
       const guide = entry.opening ? `<path d="M${snap.wall.x1} ${snap.wall.y1}L${snap.wall.x2} ${snap.wall.y2}" stroke="#d39065" stroke-width="${unit * 2}" opacity=".8"/>` : '';
-      return guide + itemShape({ type, x: snap.x, y: snap.y, angle: snap.angle ?? 0, width: entry.width, depth: entry.depth, id: '' }, false, true);
+      return guide + itemShape({ type, x: snap.x, y: snap.y, angle: snap.angle ?? 0, width: entry.width, depth: entry.depth, id: '', ...(tool === 'item' ? catalogPlacement : {}) }, false, true);
     }
     if (tool === 'wallChain') {
       const snap = findWall(hoverPoint, current.walls, Math.min(.6, unit * 15));
@@ -962,7 +1037,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       const current = level();
       root.querySelector('[data-role="empty"]').hidden = tool !== 'select' || !!(current.rooms.length || current.walls.length || current.items.length || current.image || current.annotations?.length);
     }
-    planOverlay.innerHTML = `<g pointer-events="none">${drawPreview(unit)}</g>${selectedHandles(unit)}`;
+    const handles = selectedHandles(unit);
+    planOverlay.innerHTML = `<g pointer-events="none">${drawPreview(unit)}</g>${handles}`;
+    if (selected?.kind === 'items' && handles) plane.setAttribute('aria-description', tr('rotationHint'));
+    else plane.removeAttribute('aria-description');
   }
   function schedulePlan(scene = false, viewport = scene) {
     redrawPlan ||= scene;
@@ -1016,10 +1094,17 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         detail = wallDetail(record);
       }
       if (selected.kind === 'items') {
-        title = localized(elements[record.type]);
+        const profile = elements[record.type];
+        title = record.catalogRef?.name ?? localized(profile);
         allowRotation = true;
-        detail = `<div class="cv-row">${numberField('shape:width', 'width', record.width, 'm', 0.1, 20)}${numberField('shape:depth', 'depth', record.depth, 'm', 0.05, 20)}</div>${numberField('shape:angle', 'angle', record.angle, '°', -360, 360, '1')}`;
-        if (elements[record.type].opening) detail += renderOpeningFields(record, locale);
+        detail = `<div class="cv-row">${numberField('shape:width', 'width', record.width, 'm', 0.1, 20)}${numberField('shape:depth', 'depth', record.depth, 'm', 0.05, 20)}</div>`;
+        const rotation = numberField('shape:angle', 'angle', record.angle, '°', -360, 360, '.1');
+        if (profile.opening) detail += rotation + renderOpeningFields(record, locale);
+        else {
+          const height = profile.model || Number.isFinite(record.height) ? numberField('shape:height', 'objectHeight', record.height ?? profile.height, 'm', .01, 12, '.001') : '';
+          const product = record.catalogRef?.url ? `<p><a href="${str(record.catalogRef.url)}" target="_blank" rel="noopener noreferrer">${tr('productLink')} · ${str(record.catalogRef.productId)}</a></p>` : '';
+          detail += `<div class="cv-row">${rotation}${height}</div>${product}<p class="cv-rotation-hint">${tr('rotationHint')}</p>`;
+        }
       }
       if (selected.kind === 'measurements') {
         title = tr('measure');
@@ -1032,7 +1117,6 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       return `<section class="cv-panel-section"><p class="cv-kicker">${tr('properties')}</p><h2>${str(title)}</h2>${detail}<div class="cv-action-row">${toolbarButton('duplicate-shape', 'duplicate', 'duplicate')}${allowRotation ? toolbarButton('rotate-shape', 'rotate', 'rotate') : ''}${toolbarButton('remove-shape', 'trash', 'delete')}</div></section>`;
     }
     if (tool === 'room') return `<section class="cv-panel-section"><p class="cv-kicker">${tr('structure')}</p><h2>${tr('room')}</h2><p>${tr(pendingPoint ? 'pointSecond' : 'pointFirst')}</p><label class="cv-field">${tr('drawingType')}<select data-field="roomType">${roomOptions(roomType)}</select></label></section>`;
-    if (tool === 'item' || tool === 'door' || tool === 'window' || category === 'furniture') return catalogPanel();
     const system = profile();
     const area = projectArea(project);
     const estimate = estimateProject(project.systemId, area);
@@ -1040,14 +1124,6 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     return `<section class="cv-panel-section cv-overview"><p class="cv-kicker">${tr('project')}</p><h2>${tr('summary')}</h2><p>${tr(viewMode === 'view3d' ? 'emptySelectModel' : 'emptySelect')}</p><label class="cv-field"><span>${tr('siteSystem')}</span><select data-field="systemId">${systemOptions(project.systemId)}</select></label><p class="cv-system-text">${str(lng(system.description))}</p></section>
     <section class="cv-panel-section cv-overview-numbers"><div><span>${tr('area')}</span><strong>${n(area)} <em>m²</em></strong></div><div><span>${tr('costLabel')}</span><strong>${money(estimate.total)}</strong></div><button class="cv-button cv-subtle" data-action="tab:costs" type="button">${tr('details')} ${icon('chevron', 15)}</button></section>
     <section class="cv-panel-section cv-floor-summary"><h3>${str(current.name)}</h3>${infoRows([[tr('roomTotal'), current.rooms.length], [tr('wallTotal'), `${n(current.walls.reduce((total, wall) => total + wallLength(wall), 0))} m`], [tr('levelHeight'), `${n(current.height)} m`]])}</section>${image}`;
-  }
-  function catalogPanel() {
-    return `<section class="cv-panel-section cv-catalog"><p class="cv-kicker">${tr('shutter')}</p><h2>${tr('furnish')}</h2><p>${tr(tool === 'door' || tool === 'window' || (tool === 'item' && elements[objectType].opening) ? 'placeOpening' : 'placeItem')}</p>
-      ${elementGroups.map(([label, keys]) => `<h3>${tr(label)}</h3><div class="cv-catalog-grid">${keys.filter((type) => elements[type]).map((type) => {
-        const entry = elements[type];
-        const span = Math.max(entry.width, entry.depth, 1);
-        return `<button type="button" class="cv-catalog-card" data-action="put:${type}" aria-pressed="${(tool === 'item' && objectType === type) || tool === type}"><svg viewBox="${-span * .72} ${-span * .72} ${span * 1.44} ${span * 1.44}" aria-hidden="true">${itemShape({ ...entry, x: 0, y: 0, angle: 0, id: '', type }, false, false, [])}</svg><span>${str(localized(entry))}</span></button>`;
-      }).join('')}</div>`).join('')}</section>`;
   }
   function estimateData() {
     const scope = allLevels ? project : { ...project, levels: [level()] };
@@ -1135,7 +1211,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const found = terms.length ? project.levels.flatMap((floor) => {
       const openings = openingsIndex(floor.items, isPt);
       const rooms = floor.rooms.map(({ id, type, name }) => ({ id, title: name || localized(roomStyles[type]), kind: 'rooms', glyph: 'room' }));
-      const items = floor.items.map(({ id, type }) => ({ id, title: [openings.get(id), localized(elements[type])].filter(Boolean).join(' · '), kind: 'items', glyph: elements[type]?.opening ? type === 'door' || type === 'doubleDoor' ? 'door' : 'window' : 'furnish' }));
+      const items = floor.items.map(({ id, type, catalogRef }) => ({ id, title: [openings.get(id), catalogRef?.name ?? localized(elements[type])].filter(Boolean).join(' · '), kind: 'items', glyph: elements[type]?.opening ? type === 'door' || type === 'doubleDoor' ? 'door' : 'window' : 'furnish' }));
       return [...rooms, ...items].filter(({ title }) => matches(`${title} ${floor.name}`)).map((entry) => ({ ...entry, floor }));
     }).slice(0, 32) : [];
     const elementsHtml = found.map(({ id, title, kind, glyph, floor }) => `<button type="button" class="cv-tool cv-command-entity" data-action="find-entity" data-command="true" data-id="${str(id)}" data-floor="${str(floor.id)}" data-kind="${kind}">${icon(glyph, 16)}<span>${str(title)}</span><small>${str(floor.name)}</small></button>`).join('');
@@ -1208,14 +1284,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     render();
   }
   function setTool(id) {
-    mobileCatalog = false;
+    setCatalogOpen(false);
     selected = null;
     pendingPoint = null;
     hoverPoint = null;
-    if (id === 'stair' || id === 'rail') {
-      objectType = id;
-      id = 'item';
-    }
+    if (id !== 'item') catalogPlacement = null;
     if (id === 'slab' || id === 'deck') {
       roomType = id === 'slab' ? 'circulation' : 'outdoor';
       id = 'room';
@@ -1419,7 +1492,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (!selected) return;
     inspectorTab = 'properties';
     tool = 'select';
-    mobileCatalog = false;
+    setCatalogOpen(false);
     render();
   }
   function drawAction(event) {
@@ -1450,6 +1523,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       const snap = data.opening ? openingAt(planPosition(event), data, event.pointerType) : p;
       if (!snap) { toast('openingWall'); return; }
       const created = makeItem(type, snap.x, snap.y, snap.angle);
+      if (tool === 'item' && catalogPlacement) Object.assign(created, catalogPlacement);
       change(() => { current.items.push(created); selected = { kind: 'items', id: created.id }; setActiveShape(); });
       return;
     }
@@ -1532,6 +1606,24 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     plane.dataset.panning = 'true';
     return { type: 'pan', start: point(event.clientX, event.clientY), camera: { ...camera }, scale: worldPixel(), moved: false };
   }
+  function previewRotation(event) {
+    drag.moved ||= Math.hypot(event.clientX - drag.screen.x, event.clientY - drag.screen.y) > 5;
+    if (!drag.moved) return false;
+    const center = drag.original;
+    const pointer = planPosition(event);
+    if (Math.hypot(pointer.x - center.x, pointer.y - center.y) < worldPixel() * 8) return false;
+    let angle = center.angle + bearingTo(center, pointer) - bearingTo(center, drag.start);
+    if (!event.altKey) {
+      const rightAngle = snapTo(angle, 90);
+      if (event.shiftKey) angle = snapTo(angle, 15);
+      else if (settings.snap && Math.abs(angle - rightAngle) <= 4) angle = rightAngle;
+    }
+    angle = normalizedAngle(angle);
+    const next = angle === normalizedAngle(center.angle) ? center : { ...center, angle };
+    if (drag.preview.angle === next.angle) return false;
+    drag.preview = next;
+    return true;
+  }
   plane.addEventListener('pointerdown', (event) => {
     if ((event.button !== 0 && event.button !== 1) || pen.size >= 2) return;
     preventClick = false;
@@ -1542,7 +1634,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       const mid = midpoint(positions);
       pinch = { distance: separation(positions), midpoint: mid };
       if (drag?.type === 'draw' && drag.moved) pendingPoint = null;
+      const wasRotating = drag?.handle === 'rotate';
       drag = null;
+      if (wasRotating) { delete plane.dataset.rotating; modelPaint(); }
       plane.dataset.panning = 'true';
       updateTools();
       schedulePlan(true);
@@ -1564,7 +1658,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (item) {
         inspectorTab = 'properties';
         if (event.pointerType !== 'touch' || handle || wasSelected?.id === selected.id) {
-          drag = { type: 'shape', ...selected, handle, start: world, screen: point(event.clientX, event.clientY), original: item, preview: item, moved: false };
+          drag = { type: 'shape', ...selected, handle, pointerId: event.pointerId, start: world, screen: point(event.clientX, event.clientY), original: item, preview: item, moved: false };
+          if (handle === 'rotate') plane.dataset.rotating = 'true';
         }
       } else drag = panFrom(event);
       renderInspector();
@@ -1598,6 +1693,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       camera.x = drag.camera.x - dx * drag.scale;
       camera.y = drag.camera.y - dy * drag.scale;
       schedulePlan(false, true);
+    } else if (drag?.handle === 'rotate') {
+      if (event.pointerId === drag.pointerId && previewRotation(event)) {
+        schedulePlan(true, false);
+        modelPaint();
+      }
     } else if (drag?.type === 'shape') {
       drag.moved ||= Math.hypot(event.clientX - drag.screen.x, event.clientY - drag.screen.y) > 5;
       if (drag.moved) {
@@ -1639,6 +1739,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       return;
     }
     delete plane.dataset.panning;
+    delete plane.dataset.rotating;
+    const rotating = drag?.handle === 'rotate';
+    if (rotating && !cancelled) previewRotation(event);
     const moved = drag?.moved;
     const drawing = drag?.type === 'draw';
     const panning = drag?.type === 'pan';
@@ -1654,12 +1757,19 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       drag = null;
       if (cancelled && drawing && moved) { pendingPoint = null; updateTools(); }
       if (cancelled || moved) schedulePlan(!panning, true);
+      if (rotating) modelPaint();
     }
     if (!cancelled && (!moved || drawing) && !preventClick && event.button === 0) drawAction(event);
   }
   plane.addEventListener('pointerup', releasePointer, listen);
   plane.addEventListener('pointercancel', (event) => releasePointer(event, true), listen);
   plane.addEventListener('lostpointercapture', (event) => releasePointer(event, true), listen);
+  function cancelRotation() {
+    if (drag?.handle !== 'rotate') return;
+    const { pointerId } = drag;
+    releasePointer({ pointerId }, true);
+    if (plane.hasPointerCapture(pointerId)) plane.releasePointerCapture(pointerId);
+  }
   plane.addEventListener('contextmenu', (event) => {
     if (!pendingPoint) return;
     event.preventDefault();
@@ -1667,7 +1777,16 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }, listen);
   plane.addEventListener('pointerleave', () => { if (!pen.size) { hoverPoint = null; schedulePlan(); } }, listen);
   plane.addEventListener('keydown', (event) => {
-    if (event.code !== 'Space' || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (drag?.type === 'shape' || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (['ArrowLeft', 'ArrowRight'].includes(event.key) && selected?.kind === 'items' && tool === 'select' && settings.furniture) {
+      const item = entity();
+      if (!item || elements[item.type].opening) return;
+      event.preventDefault();
+      const step = event.shiftKey ? 15 : 5;
+      change(() => { item.angle = normalizedAngle(item.angle + (event.key === 'ArrowLeft' ? -step : step)); });
+      return;
+    }
+    if (event.code !== 'Space') return;
     event.preventDefault();
     if (spacePan) return;
     spacePan = true;
@@ -1681,9 +1800,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     schedulePlan();
   }
   window.addEventListener('keyup', (event) => { if (event.code === 'Space') releaseSpacePan(); }, listen);
-  window.addEventListener('blur', releaseSpacePan, listen);
+  window.addEventListener('blur', () => { releaseSpacePan(); cancelRotation(); }, listen);
   plane.addEventListener('wheel', (event) => {
     event.preventDefault();
+    if (drag?.handle === 'rotate') return;
     const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? plane.offsetHeight : 1;
     if (event.shiftKey || Math.abs(event.deltaX) > Math.abs(event.deltaY)) {
       camera.x += (event.deltaX || event.deltaY) * unit * worldPixel();
@@ -1793,6 +1913,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const action = button.dataset.action;
     const [type, arg] = action.split(':');
     if (button.dataset.command && dialog.open) {
+      if (type === 'catalog') fromFocus = null;
       dialog.close();
       if (type === 'tool') category = categories.find((entry) => entry.tools.includes(arg))?.id ?? 'structure';
     }
@@ -1822,7 +1943,6 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         category = arg;
         toolbarOpen = true;
         setTool('select');
-        if (arg === 'furniture') { inspectorOpen = true; inspectorTab = 'properties'; render(); }
         if (arg === 'visualise' && viewMode === 'plan') { viewMode = 'split'; render(); }
         break;
       case 'tool': setTool(arg); break;
@@ -1851,19 +1971,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         root.querySelector('[data-action="snap-plan"]')?.focus();
         break;
       case 'finish-drawing': finishDrawing(); break;
-      case 'put':
-        objectType = arg;
-        inspectorOpen = false;
-        setTool('item');
-        break;
-      case 'catalog':
-        inspectorOpen = true;
-        mobileCatalog = true;
-        inspectorTab = 'properties';
-        selected = null;
-        tool = 'item';
-        render();
-        break;
+      case 'catalog': setCatalogOpen(!catalogOpen, true); break;
       case 'mode': viewMode = arg; render(); break;
       case 'view3d': viewMode = 'view3d'; render(); break;
       case 'undo': undo(); break;
@@ -1885,7 +1993,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         modelPaint();
         break;
       case 'tab': inspectorTab = arg; inspectorOpen = true; updateTools(); renderInspector(); break;
-      case 'inspector': inspectorOpen = !inspectorOpen; updateTools(); break;
+      case 'inspector':
+        inspectorOpen = catalogOpen || !inspectorOpen;
+        setCatalogOpen(false);
+        updateTools();
+        break;
       case 'close-inspector': inspectorOpen = false; updateTools(); inspectorToggle.focus({ preventScroll: true }); break;
       case 'level': switchLevel(arg); dialog.close(); break;
       case 'add-level':
@@ -1907,7 +2019,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       case 'remove-shape': removeEntity(); break;
       case 'rotate-shape': {
         const item = entity();
-        if (item) change(() => { item.angle = (item.angle + 90) % 360; });
+        if (item) change(() => { item.angle = normalizedAngle(item.angle + 90); });
         break;
       }
       case 'duplicate-project':
@@ -2052,7 +2164,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       input.value = normalizeOpening(item.opening ?? {}, item.type)[field];
       return;
     }
-    if (input.type === 'number' && !Number.isFinite(number)) { input.value = item[key] ?? wallLength(item); return; }
+    if (input.type === 'number' && !Number.isFinite(number)) {
+      input.value = item[key] ?? (key === 'height' && selected.kind === 'items' ? elements[item.type].height : wallLength(item));
+      return;
+    }
     const value = Number.isFinite(number) ? clamp(number, Number(input.min), Number(input.max)) : input.value.trim();
     if (selected.kind === 'walls' && key === 'length') {
       const length = wallLength(item);
@@ -2308,11 +2423,24 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     }
   }, listen);
 
+  root.addEventListener('keydown', (event) => {
+    if (event.key !== 'Escape' || !catalogOpen || drag?.handle === 'rotate' || root.querySelector('dialog[open]')) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setCatalogOpen(false, true);
+  }, listen);
   window.addEventListener('keydown', (event) => {
     if (!root.isConnected || dialog.open || document.querySelector('dialog[open]')) return;
     const editing = event.target.matches?.('input, textarea, select, [contenteditable]');
     const key = event.key.toLowerCase();
     const chord = event.ctrlKey || event.metaKey;
+    if (drag?.handle === 'rotate') {
+      if (key === 'escape') {
+        event.preventDefault();
+        cancelRotation();
+      }
+      return;
+    }
     if (chord && key === 'k') {
       event.preventDefault();
       if (editing) event.target.blur();

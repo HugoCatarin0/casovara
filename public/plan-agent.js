@@ -1,5 +1,6 @@
 import { elements, findWall, projectArea, roomStyles, wallLength } from './builder-engine.js';
 import { estimateProject, systemById, systems } from './core.js';
+import { normalizeObjectCatalogRef } from './object-catalog.js';
 import {
   applyWallAssembly, effectiveWallHeight, getWallSpec, illustrativeWallSpec, normalizeOpening,
   normalizeWallSpec, openingTypes, openingVertical, wallAssemblies, wallBaseOffset,
@@ -30,6 +31,7 @@ const roof = object({ type: choice(roofTypes), pitch: decimal(5, 65, 'Roof slope
 const room = { name: label, type: choice(Object.keys(roomStyles)), ...axis, width: span, depth: span, finish: choice(finishes) };
 const furniture = {
   type: choice(furnitureTypes), ...axis, width: decimal(.1, 20, 'Object width in metres.'),
+  height: decimal(.01, 12, 'Object height in metres. Defaults to the catalogue height.'),
   depth: decimal(.05, 20, 'Object depth in metres.'), angle,
 };
 const opening = {
@@ -198,10 +200,13 @@ function makeRoom(data, used) {
 
 function makeFurniture(data, used) {
   const profile = elements[data.type];
+  const catalogRef = normalizeObjectCatalogRef(data.catalogRef);
   return {
     id: reserveId(used, data.id, 'item'), type: data.type,
     x: rounded(data.x), y: rounded(data.y), angle: rounded(data.angle ?? 0),
     width: rounded(data.width ?? profile.width), depth: rounded(data.depth ?? profile.depth),
+    ...(Number.isFinite(data.height) ? { height: rounded(Math.max(.01, Math.min(data.height, 12))) } : {}),
+    ...(catalogRef ? { catalogRef } : {}),
   };
 }
 
@@ -764,10 +769,16 @@ function analyse(project, locale) {
         id: wall.id, x1: wall.x1, y1: wall.y1, x2: wall.x2, y2: wall.y2,
         length: rounded(wallLength(wall)), thickness: wall.thickness, openingIds: (wallIndex.get(wall.id) ?? []).map(({ id }) => id),
       })),
-      items: floor.items.map(({ id, type, x, y, width, depth, angle, opening }) => {
+      items: floor.items.map(({ id, type, x, y, width, depth, angle, opening, height, catalogRef }) => {
         const host = attachedById.get(id);
         const geometry = { id, type, x, y, width, depth, angle };
-        if (!openingTypes.includes(type)) return geometry;
+        if (!openingTypes.includes(type)) {
+          const reference = normalizeObjectCatalogRef(catalogRef);
+          return {
+            ...geometry, height: Number.isFinite(height) ? Math.max(.01, Math.min(height, 12)) : elements[type].height,
+            ...(reference ? { name: reference.name } : {}),
+          };
+        }
         const { sill, top } = openingVertical({ type, opening });
         return { ...geometry, height: rounded(top - sill), sill, wallId: host?.id ?? null, offset: host ? rounded(openingOffset({ x, y }, host)) : null };
       }),
