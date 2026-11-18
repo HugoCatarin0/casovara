@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import { createDesignAssistant } from '../design-assistant.js';
 import { registerBuilderTools } from '../public/builder-webmcp.js';
 import { makeTemplate } from '../public/templates.js';
+import { generateConstructionPlan } from '../public/construction-tasks.js';
 
 const browser = { socket: { remoteAddress: '127.0.0.1' }, headers: { host: '127.0.0.1:3000' } };
 function exampleInput() {
@@ -130,4 +131,31 @@ test('The assistant can propose building services without applying them to the e
   assert.equal(project.levels[0].services, undefined);
   assert.equal(Object.keys(result.project.levels[0].services).length, 5);
   assert.ok(result.analysis.levels[0].services.radiantFloor.runs.length);
+});
+
+test('The assistant recalculates an editable construction timetable while keeping task notes local', async () => {
+  const project = makeTemplate('costa', 'pt-PT');
+  project.constructionPlan = generateConstructionPlan(project, { startDate: '2027-03-01' });
+  project.constructionPlan.tasks[0].notes = 'PRIVATE_CONSTRUCTION_NOTES';
+  let first = true;
+  const assistant = createDesignAssistant({ apiKey: 'test-key', fetchImpl: async (url, { body }) => {
+    const request = JSON.parse(body);
+    assert.equal(body.includes('PRIVATE_CONSTRUCTION_NOTES'), false);
+    const tool = request.tools.find(({ name }) => name === 'casovara_plan_construction');
+    assert.ok(tool);
+    if (first) {
+      first = false;
+      return reply([{ type: 'function_call', name: tool.name, call_id: 'construction', arguments: JSON.stringify({ operations: [
+        { op: 'edit', changes: [{ op: 'set_calendar', calendar: { startDate: '2027-03-08' } }] },
+      ] }) }]);
+    }
+    const output = JSON.parse(request.input.find(({ type }) => type === 'function_call_output').output);
+    assert.equal(output.constructionChanged, true);
+    assert.equal(output.analysis.construction.startDate, '2027-03-08');
+    return reply([{ type: 'message', content: [{ type: 'output_text', text: 'Calendário atualizado na proposta.' }] }]);
+  } });
+  const result = await assistant.run(browser, { project, prompt: 'Adia a data de início do plano uma semana.' });
+  assert.equal(result.project.constructionPlan.startDate, '2027-03-08');
+  assert.equal(result.project.constructionPlan.tasks[0].notes, 'PRIVATE_CONSTRUCTION_NOTES');
+  assert.equal(project.constructionPlan.startDate, '2027-03-01');
 });

@@ -2,6 +2,7 @@ import { openBuilderReport } from './builder-report.js';
 import { openBuilderShare } from './builder-share.js';
 import { mountBuilderAssistant } from './builder-assistant.js';
 import { mountObjectLibrary } from './builder-catalog.js';
+import { mountConstructionSchedule } from './schedule-ui.js';
 import { createServicesEditor, renderServicesPlan, servicesPrintLegend } from './services-ui.js';
 import { serviceLimits, serviceSystems } from './building-services.js';
 import { registerBuilderTools } from './builder-webmcp.js';
@@ -23,6 +24,7 @@ import {
 const icons = {
   assistant: '<path d="M10 3.5 11.9 9l5.6 2-5.6 2-1.9 5.5-2-5.5L2.5 11 8 9Zm8 .5 1 2.7L22 8l-3 .9-1 3-1-3L14 8l3-1.3Zm.5 13 .6 1.6 1.4.6-1.4.5-.6 1.8-.6-1.8-1.4-.5 1.4-.6Z"/>',
   services: '<path d="M6 6h10a2 2 0 0 1 2 2v8m-12 2h5a2 2 0 0 0 2-2V6"/><circle cx="4" cy="6" r="2"/><circle cx="4" cy="18" r="2"/><circle cx="18" cy="18" r="2"/>',
+  calendar: '<rect x="4" y="6" width="16" height="14" rx="2"/><path d="M8 4v4m8-4v4M4 10h16m-11 4h5m-5 3h8"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   folder: '<path d="M3 7c0-1 .8-2 2-2h5l2 2h7c1 0 2 .9 2 2v9H3Z"/>',
@@ -69,6 +71,7 @@ icons.dock = '<rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M14.
 icons.sun = '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.5 1.5m10.4 10.4 1.5 1.5m0-13.4-1.5 1.5M6.8 17.2l-1.5 1.5"/>';
 const icon = (name, size = 19) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.65" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.room}</svg>`;
 const labels = {
+  construction: ['Plano de obra', 'Construction plan'],
   services: ['Instalações', 'Building services'], serviceReplace: ['Refazer traçado', 'Regenerate layout'],
   serviceReplacePrompt: ['O novo traçado substitui os pontos e ligações desta especialidade nos pisos abrangidos. Podes usar Desfazer.', 'The new layout replaces points and connections for this service on the selected storeys. You can undo this change.'],
   assistant: ['Assistente IA', 'AI assistant'],
@@ -297,6 +300,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       </div>
       <div class="cv-top-actions">
         <button class="cv-tool cv-search-trigger" type="button" data-action="commands" aria-label="${tr('commands')}" title="${tr('commands')}">${icon('search', 16)}<span>${tr('commands')}</span><kbd>⌘/Ctrl K</kbd></button>
+        ${toolbarButton('construction', 'calendar', 'construction', 'aria-haspopup="dialog" aria-controls="cv-construction-schedule"', true)}
         ${toolbarButton('assistant', 'assistant', 'assistant', 'aria-haspopup="dialog"', true)}
         ${toolbarButton('help', 'info', 'help')}
         ${toolbarButton('export', 'export', 'export', '', true)}
@@ -433,6 +437,16 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     refresh: refreshServices,
     confirmReplace(operation) { openModal('confirm', { title: 'serviceReplace', detail: 'serviceReplacePrompt', accept: 'serviceReplace', operation }); },
   });
+  const scheduleTrigger = root.querySelector('.cv-top-actions [data-action=construction]');
+  const construction = mountConstructionSchedule(root, {
+    locale, getProject: () => project,
+    commit(next) {
+      change(() => { project.constructionPlan = next; }, false);
+      updateTools();
+    },
+    undo, historyState: () => ({ canUndo: history.length > 0, canRedo: future.length > 0 }),
+  });
+  let showConstructionAfterAssistant = false;
   const assistant = mountBuilderAssistant(root, {
     locale,
     getProject: () => project,
@@ -440,6 +454,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (!Array.isArray(next?.levels) || !next.levels.length) return false;
       if (baseProject && JSON.stringify(baseProject) !== JSON.stringify(project)) return false;
       const candidate = clean(next);
+      showConstructionAfterAssistant ||= Boolean(candidate.constructionPlan && JSON.stringify(candidate.constructionPlan) !== JSON.stringify(project.constructionPlan));
       const changedServices = Object.keys(serviceSystems).filter((id) => candidate.levels.some((floor) => {
         const previous = viewLevel(project, floor.id)?.services?.[id];
         const proposed = floor.services?.[id];
@@ -464,6 +479,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       return true;
     },
   });
+  root.querySelector('#cv-assistant').addEventListener('close', () => {
+    if (!showConstructionAfterAssistant) return;
+    showConstructionAfterAssistant = false;
+    construction.open({ withFocus: scheduleTrigger });
+  }, listen);
   const bearings = isPt ? ['S', 'SE', 'E', 'NE', 'N', 'NO', 'O', 'SO'] : ['S', 'SE', 'E', 'NE', 'N', 'NW', 'W', 'SW'];
   const viewer = createModelViewer({
     canvas: model, signal: controller.signal, scene: currentModelScene,
@@ -1278,7 +1298,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     return `<div class="cv-modal-menu">${actions.map(([action, glyph, key]) => toolbarButton(action, glyph, key, '', true)).join('')}</div>`;
   }
   const commands = [
-    ['assistant', 'assistant', 'assistant'], ['services', 'services', 'services'],
+    ['assistant', 'assistant', 'assistant'], ['services', 'services', 'services'], ['construction', 'calendar', 'construction'],
     ['projects', 'folder', 'projects'], ['new', 'plus', 'new'], ['import', 'upload', 'import'], ['save', 'save', 'save'],
     ['tool:select', 'select', 'select'], ['tool:pan', 'pan', 'pan'], ['tool:wall', 'wall', 'wall'], ['tool:angled', 'angled', 'angled'],
     ['tool:room', 'room', 'room'], ['tool:detect', 'fit', 'detectRoom'], ['tool:divide', 'room', 'splitUpdate'], ['tool:door', 'door', 'door'], ['tool:window', 'window', 'window'], ['catalog', 'furnish', 'furnish'],
@@ -2056,7 +2076,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const action = button.dataset.action;
     const [type, arg] = action.split(':');
     if (button.dataset.command && dialog.open) {
-      if (type === 'catalog' || type === 'services') fromFocus = null;
+      if (type === 'catalog' || type === 'services' || type === 'construction') fromFocus = null;
       dialog.close();
       if (type === 'tool') category = categories.find((entry) => entry.tools.includes(arg))?.id ?? 'structure';
     }
@@ -2103,6 +2123,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       }
       case 'toggle-tools': toolbarOpen = !toolbarOpen; updateTools(); break;
       case 'assistant': assistant.open(); break;
+      case 'construction': construction.open({ withFocus: scheduleTrigger }); break;
       case 'simulator':
         setSimulatorOpen(simulatorPanel.hidden);
         if (simulatorPanel.hidden) simulatorToggle.focus({ preventScroll: true });
@@ -2686,6 +2707,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   return () => {
     controller.abort();
     assistant.dispose();
+    construction.dispose();
     resize.disconnect();
     viewer.dispose();
     cancelAnimationFrame(planFrame);

@@ -5,6 +5,7 @@
 @import url('./builder-assistant.css');
 @import url('./builder-catalog.css');
 @import url('./services-ui.css');
+@import url('./schedule-ui.css');
 
 .cv-studio {
   --studio-paper: #faf8f2;
@@ -441,6 +442,7 @@
 }
 @media (max-width: 1070px) {
   .cv-search-trigger kbd { display: none; }
+  .cv-top-actions [data-action=construction] span { display: none; }
   .cv-ribbon-actions [data-action=settings] span { display: none; }
 }
 @media (max-width: 800px) {

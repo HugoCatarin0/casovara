@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { detectLocale, languagePreferences, locales } from './public/locales.js';
 import { systemById } from './public/core.js';
 import { normalizeBuildingServices } from './public/building-services.js';
+import { normalizeConstructionSchedule } from './public/construction-schedule.js';
 import { createDesignAssistant } from './design-assistant.js';
 import { handleMcp } from './mcp-app.js';
 import { createCatalogService } from './catalog-service.js';
@@ -131,8 +132,10 @@ function validateProject(project) {
     levelIds.add(level.id);
   }
   if (!levelIds.has(project.levelId)) throw new RequestError(422, 'invalid_project');
+  const constructionPlan = normalizeConstructionSchedule(project.constructionPlan);
+  if (project.constructionPlan != null && !constructionPlan) throw new RequestError(422, 'invalid_construction_plan');
   return { ...project, name: project.name.trim(), levels: project.levels.map((level) => Object.hasOwn(level, 'services')
-    ? { ...level, services: normalizeBuildingServices(level.services) } : level) };
+    ? { ...level, services: normalizeBuildingServices(level.services) } : level), ...(constructionPlan ? { constructionPlan } : {}) };
 }
 
 async function readProject(path) {

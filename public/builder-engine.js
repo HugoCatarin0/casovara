@@ -1,6 +1,7 @@
 import { furnitureModel, shade } from './model-furniture.js';
 import { appendModelServices } from './model-services.js';
 import { normalizeBuildingServices } from './building-services.js';
+import { normalizeConstructionSchedule } from './construction-schedule.js';
 import { elements, normalizeObjectCatalogRef } from './object-catalog.js';
 import { groundShadow, lightSurface, simulatorDefaults, sunSurfaceColor, sunVector } from './simulator.js';
 import { effectiveWallHeight, openingVertical, wallAppearance, wallBaseOffset } from './wall-spec.js';
@@ -128,9 +129,12 @@ export function normalizeProject(input, systemIds, isPt) {
     ...(Object.hasOwn(level, 'services') ? { services: normalizeBuildingServices(level.services) } : {}),
   }));
   if (!levels.length) throw new Error('Invalid project');
+  const constructionPlan = normalizeConstructionSchedule(input.constructionPlan);
+  if (input.constructionPlan != null && !constructionPlan) throw new Error('Invalid construction plan');
   return {
     name: name(input.name, isPt ? 'Novo projeto' : 'New project'), systemId: systemIds.includes(input.systemId) ? input.systemId : systemIds[0],
     levelId: levels.some((level) => level.id === input.levelId) ? input.levelId : levels[0].id, levels,
+    ...(constructionPlan ? { constructionPlan } : {}),
   };
 }
 

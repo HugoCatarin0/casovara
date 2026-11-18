@@ -17,7 +17,7 @@ const REVIEW_FILE = new URL('./public/mcp-planner.html', import.meta.url);
 const maxBody = 4 * 1024 * 1024;
 const serverInfo = { name: 'casovara', title: 'Casovara', version: '1.0.0' };
 const capabilities = { tools: {}, resources: {}, prompts: {}, extensions: { [APP_EXTENSION]: { mimeTypes: [APP_MIME_TYPE] } } };
-const instructions = 'Use casovara_get_planner_skill to learn the design workflow. Design tools work on draft plans and on JSON supplied with the request. Generate or edit schematic building services with casovara_design_services. Review geometry and estimates in Casovara before building.';
+const instructions = 'Use casovara_get_planner_skill to learn the design workflow. Tools use draft plans and supplied project JSON. Use casovara_design_services for building services and casovara_plan_construction for a dependency- and crew-constrained construction programme. Review proposals in Casovara.';
 const resources = [
   { uri: REVIEW_URI, name: 'Casovara plan review', description: 'Explore the generated floor plan and export a project file.', mimeType: APP_MIME_TYPE, _meta: { ui: {} } },
   { uri: GUIDE_URI, name: 'Casovara house-planning skill', description: 'Planning workflow, metric coordinates, room and opening rules, and example tool calls.', mimeType: 'text/markdown' },
@@ -54,7 +54,8 @@ function descriptors() {
       outputSchema: {
         type: 'object',
         properties: { analysis: analysisSchema, ...(preview ? { project: projectSchema } : {}),
-          ...(tool.name === 'casovara_design_services' ? { serviceChanges: { type: 'array', items: { type: 'object' } } } : {}) },
+          ...(tool.name === 'casovara_design_services' ? { serviceChanges: { type: 'array', items: { type: 'object' } } } : {}),
+          ...(tool.name === 'casovara_plan_construction' ? { constructionChanged: { type: 'boolean' } } : {}) },
         required: preview ? ['project', 'analysis'] : ['analysis'],
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: !preview, openWorldHint: false },

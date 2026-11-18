@@ -2,6 +2,8 @@ import { elements, findWall, projectArea, roomStyles, wallLength } from './build
 import { estimateProject, systemById, systems } from './core.js';
 import { normalizeObjectCatalogRef } from './object-catalog.js';
 import { applyServiceOperations, generateServices, inspectServices, normalizeBuildingServices, serviceLimits, serviceSystems } from './building-services.js';
+import { applyConstructionOperations, constructionLimits, normalizeConstructionSchedule, scheduleConstruction, validateConstructionSchedule } from './construction-schedule.js';
+import { generateConstructionPlan } from './construction-tasks.js';
 import {
   applyWallAssembly, effectiveWallHeight, getWallSpec, illustrativeWallSpec, normalizeOpening,
   normalizeWallSpec, openingTypes, openingVertical, wallAssemblies, wallBaseOffset,
@@ -120,6 +122,30 @@ const serviceEdits = [
   operation('edit', { system: serviceSystem, levelId: id, changes: list({ oneOf: serviceChanges }, 1, serviceLimits.operations) }, ['system', 'changes']),
 ];
 
+const scheduleDate = { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Portugal civil date in YYYY-MM-DD format.' };
+const integer = (minimum, maximum, description) => ({ type: 'integer', minimum, maximum, description });
+const nullable = (schema) => ({ ...schema, type: [schema.type, 'null'] });
+const scheduleLabel = { ...label, maxLength: constructionLimits.label };
+const scheduleLink = object({ id, lag: integer(0, constructionLimits.lagDays, 'Whole workdays between a predecessor finishing and this task being released.') }, ['id']);
+const scheduleChanges = [
+  operation('set_calendar', { calendar: object({ startDate: scheduleDate, weekdays: list(integer(1, 7, '1 is Monday.'), 1, 7), exclusions: list(scheduleDate, 0, constructionLimits.exclusions) }) }, ['calendar']),
+  operation('upsert_crew', { crew: object({ id, label: scheduleLabel, capacity: integer(1, constructionLimits.capacity, 'Number of crew units available per workday.') }, ['id']) }, ['crew']),
+  operation('delete_crew', { id }, ['id']),
+  operation('upsert_task', { task: object({ id, label: scheduleLabel, phase: { ...label, maxLength: constructionLimits.phase },
+    days: integer(0, constructionLimits.taskDays, 'Duration in workdays. Zero represents a milestone.'),
+    crewId: nullable(id), crewUnits: nullable(integer(1, constructionLimits.capacity)), notBefore: nullable(scheduleDate),
+    levelId: nullable(id), notes: { type: ['string', 'null'], minLength: 0, maxLength: constructionLimits.notes }, dependencies: list(scheduleLink, 0, constructionLimits.tasks - 1),
+  }, ['id']) }, ['task']),
+  operation('delete_task', { id }, ['id']),
+];
+const constructionEdits = [
+  operation('generate', { startDate: scheduleDate, replace: { ...flag, description: 'Set only when the user requests replacing the current construction plan.' },
+    include: object({ electrical: flag, plumbing: flag, vmc: flag, airConditioning: flag, radiantFloor: flag, externalWorks: flag }),
+  }),
+  operation('edit', { changes: list({ oneOf: scheduleChanges }, 1, constructionLimits.operations) }, ['changes']),
+  operation('clear', {}),
+];
+
 export const designTools = Object.freeze([
   {
     name: 'casovara_create_plan', title: 'Create a house plan',
@@ -133,13 +159,18 @@ export const designTools = Object.freeze([
   },
   {
     name: 'casovara_inspect_plan', title: 'Inspect a house plan',
-    description: 'Read a Casovara project and return storey geometry, entity ids, building services with node and run ids, net plan coverage, indicative material costs, and warnings. Provide the full project to external tools.',
+    description: 'Read a Casovara project and return storey geometry, building-service ids, construction tasks and dependencies when defined, coverage, indicative material costs, and warnings. Provide the full project to external tools.',
     inputSchema: object({ project: projectInput }),
   },
   {
     name: 'casovara_design_services', title: 'Design building services',
     description: 'Generate or edit schematic electrical, plumbing (cold, hot and drains), VMC ventilation, air conditioning and radiant-floor networks. Use exact node, run and storey ids to adjust terminals and routes. Returns an editable proposal for review.',
     inputSchema: object({ project: projectInput, operations: list({ oneOf: serviceEdits }, 1, 40) }, ['operations']),
+  },
+  {
+    name: 'casovara_plan_construction', title: 'Plan the construction schedule',
+    description: 'Generate or update the editable construction programme, including calendar, workday durations, milestones, predecessor links and crew capacity. Recalculates a feasible concurrent timeline, dependency critical path and one-task-at-a-time comparison. Returns a proposal for review.',
+    inputSchema: object({ project: projectInput, operations: list({ oneOf: constructionEdits }, 1, 40) }, ['operations']),
   },
 ]);
 
@@ -154,6 +185,7 @@ Use Casovara to draw editable house plans. Work in metres with x and y as plan a
 - Use \`casovara_edit_plan\` for atomic changes. Each operation can target a \`levelId\`; omit it to use the active storey. Use exact ids and supply opening \`wallId\` plus an \`offset\` in metres from that wall's first endpoint to the opening centre. A door or window must fit within its wall in both dimensions. If walls were created independently of a room, include explicit wall edits when moving a room boundary. Evaluate the warnings after every edit.
 - Use \`casovara_design_services\` to generate or adjust building services. The supported systems are ${serviceIds.map((id) => `\`${id}\``).join(', ')}. Specify radiant floor only if the user asks for it or confirms it for relevant rooms. A schematic generation preserves existing work unless the user requests replacement. Use an \`edit\` operation with the exact system and storey ids and a batch of node or run changes. Each run joins two nodes in the same system and takes optional intermediate points, omitting its endpoints. A storey schematic leaves connections between storeys for coordination. These tools do not determine loads, sizes, slopes, equipment ratings or regulatory compliance.
 - Building services media and compatible node kinds per system: ${Object.entries(serviceSystems).map(([id, { kinds, media }]) => `${id}: nodes ${Object.keys(kinds).join(', ')}; media ${Object.keys(media).join(', ')}`).join(' | ')}.
+- Use \`casovara_plan_construction\` to generate or revise the construction programme. Dates use \`YYYY-MM-DD\`; durations, lags and crew capacity refer to working days. A zero-day task is a milestone. A predecessor must finish and its lag elapse before its successor can start. For a change, inspect the task and crew ids and preserve all known dependencies and release gates. To remove a referenced task or crew, update every dependent task in the same edit. Keep approvals, curing, safety, procurement and work-area compatibility explicit. Compare the selected programme against its one-task-at-a-time baseline, and explain any limits. Durations are editable planning assumptions and the scheduler searches feasible arrangements without claiming a global minimum.
 - MCP calls work with the returned \`project\` object and do not read a browser's private workspace. Pass that object on each inspect/edit. Download or import the project into the editor to review it. When the planner itself supplies the active project you may omit it.
 - These are conceptual layouts. Explain any assumption and flag requests that cannot be represented by rectangles and linear walls. Review usable dimensions, structure and compliance with a qualified professional before building.
 
@@ -168,6 +200,8 @@ Create a shared living/kitchen and a bedroom on one floor:
 Inspect the returned project, then add a bed by issuing \`{"operations":[{"op":"add_furniture","furniture":{"type":"bed","x":8,"y":2.5}}]}\` with the same project.
 
 Then generate electrical and plumbing schemes for the house with \`casovara_design_services\` and \`{"operations":[{"op":"generate","systems":["electrical","plumbing"]}]}\`. Inspect the returned service node and run identifiers before editing a scheme.
+
+Generate an initial construction plan with \`casovara_plan_construction\` and \`{"operations":[{"op":"generate","startDate":"2027-03-01"}]}\`. To update the duration of a task, use an edit containing \`{"op":"upsert_task","task":{"id":"exact-task-id","days":5}}\`.
 `;
 
 function validate(schema, value, path) {
@@ -175,6 +209,10 @@ function validate(schema, value, path) {
     const match = schema.oneOf.find((option) => option.properties.op.enum.includes(value?.op));
     if (!match) throw new Error(`${path}.op must name an available planning operation.`);
     return validate(match, value, path);
+  }
+  if (Array.isArray(schema.type)) {
+    if (value === null && schema.type.includes('null')) return;
+    return validate({ ...schema, type: schema.type.find((kind) => kind !== 'null') }, value, path);
   }
   if (schema.enum && !schema.enum.includes(value)) throw new Error(`${path} must be one of ${schema.enum.join(', ')}.`);
   switch (schema.type) {
@@ -194,15 +232,16 @@ function validate(schema, value, path) {
       }
       value.forEach((item, index) => validate(schema.items, item, `${path}[${index}]`));
       return;
+    case 'integer':
     case 'number':
-      if (!Number.isFinite(value) || value < schema.minimum || value > schema.maximum) {
+      if (!Number.isFinite(value) || (schema.type === 'integer' && !Number.isInteger(value)) || value < schema.minimum || value > schema.maximum) {
         const bounds = schema.minimum === undefined ? '' : ` between ${schema.minimum} and ${schema.maximum}`;
         throw new Error(`${path} must be a finite number${bounds}.`);
       }
       return;
     case 'string':
       if (typeof value !== 'string' || value.length < schema.minLength || value.length > schema.maxLength ||
-          (schema.pattern && !new RegExp(schema.pattern).test(value)) || !value.trim()) {
+          (schema.pattern && !new RegExp(schema.pattern).test(value)) || (schema.minLength !== 0 && !value.trim())) {
         throw new Error(`${path} must be valid non-empty text.`);
       }
       return;
@@ -836,6 +875,19 @@ function analyse(project, locale) {
   });
   const exactArea = projectArea(project);
   const estimate = estimateProject(project.systemId, exactArea);
+  const constructionPlan = normalizeConstructionSchedule(project.constructionPlan);
+  let construction;
+  if (constructionPlan) {
+    try {
+      construction = { ...scheduleConstruction(constructionPlan), crews: constructionPlan.crews,
+        weekdays: constructionPlan.weekdays, exclusions: constructionPlan.exclusions };
+    } catch (error) {
+      if (error.code !== 'schedule_too_long') throw error;
+      if (warnings.length < 60) warnings.push({ code: 'schedule_too_long', message: pt
+        ? 'O plano de obra ultrapassa o horizonte disponível. Revê as datas e as durações.'
+        : 'The construction programme exceeds the available horizon. Review the dates and durations.' });
+    }
+  }
   return {
     name: project.name, systemId: project.systemId, levelId: project.levelId, area: rounded(exactArea, 100),
     counts: {
@@ -844,6 +896,7 @@ function analyse(project, locale) {
       openings: levels.reduce((sum, floor) => sum + floor.items.filter(({ type }) => openingTypes.includes(type)).length, 0),
     },
     levels, warnings,
+    ...(construction ? { construction } : {}),
     materialEstimate: { currency: 'EUR', total: estimate.total, indicative: true },
   };
 }
@@ -914,6 +967,30 @@ export function runDesignTool(name, args, { project = null, locale = 'pt-PT' } =
       throw new Error('No scheme was generated. Existing schemes are kept by default and automatic proposals require eligible indoor rooms.');
     }
     return { project: edited, analysis: analyse(edited, locale), serviceChanges };
+  }
+  if (name === 'casovara_plan_construction') {
+    let constructionPlan = normalizeConstructionSchedule(edited.constructionPlan);
+    for (const operation of args.operations) {
+      if (operation.op === 'generate') {
+        if (constructionPlan && !operation.replace) throw new Error('A construction plan already exists. Edit it or explicitly request replacement.');
+        const generated = generateConstructionPlan(edited, { locale, startDate: operation.startDate ?? constructionPlan?.startDate, include: operation.include });
+        if (constructionPlan) {
+          generated.weekdays = constructionPlan.weekdays;
+          generated.exclusions = constructionPlan.exclusions;
+          const existingCrews = new Map(constructionPlan.crews.map((crew) => [crew.id, crew]));
+          generated.crews = generated.crews.map((crew) => existingCrews.get(crew.id) ?? crew);
+        }
+        constructionPlan = validateConstructionSchedule(generated);
+        scheduleConstruction(constructionPlan);
+      } else if (operation.op === 'clear') constructionPlan = null;
+      else {
+        if (!constructionPlan) throw new Error('Generate a construction plan before editing its tasks and calendar.');
+        constructionPlan = applyConstructionOperations(constructionPlan, operation.changes);
+      }
+    }
+    if (constructionPlan) edited.constructionPlan = constructionPlan;
+    else delete edited.constructionPlan;
+    return { project: edited, analysis: analyse(edited, locale), constructionChanged: true };
   }
   for (const edit of args.operations) applyEdit(edited, edit, used);
   validateSnapshot(edited);

@@ -19,9 +19,31 @@ const create = (overrides = {}) => runDesignTool('casovara_create_plan', {
 const edit = (project, operations) => runDesignTool('casovara_edit_plan', { operations }, { project });
 
 test('Planning tools describe creation, atomic editing and inspection', () => {
-  assert.deepEqual(designTools.map(({ name }) => name), ['casovara_create_plan', 'casovara_edit_plan', 'casovara_inspect_plan', 'casovara_design_services']);
+  assert.deepEqual(designTools.map(({ name }) => name), ['casovara_create_plan', 'casovara_edit_plan', 'casovara_inspect_plan', 'casovara_design_services', 'casovara_plan_construction']);
   assert.ok(designTools[1].inputSchema.properties.operations.items.oneOf.length >= 10);
   assert.match(plannerGuide, /metres/);
+});
+
+test('Construction tooling generates, inspects and edits an isolated, resource-constrained programme', () => {
+  const { project } = create();
+  const tool = (operations, current = project) => runDesignTool('casovara_plan_construction', { project: current, operations });
+  const first = tool([{ op: 'generate', startDate: '2027-03-01' }]);
+  assert.equal(first.constructionChanged, true);
+  assert.equal(project.constructionPlan, undefined);
+  assert.equal(first.project.constructionPlan.startDate, '2027-03-01');
+  assert.ok(first.analysis.construction.savedDays > 0);
+  assert.ok(first.analysis.construction.peakParallel > 1);
+  const task = first.project.constructionPlan.tasks.find(({ id }) => id === 'earthworks');
+  const adjusted = tool([{ op: 'edit', changes: [
+    { op: 'set_calendar', calendar: { exclusions: ['2027-03-01'] } },
+    { op: 'upsert_task', task: { id: task.id, days: task.days + 2 } },
+  ] }], first.project);
+  assert.equal(adjusted.analysis.construction.startDate, '2027-03-02');
+  assert.equal(adjusted.analysis.construction.tasks.find(({ id }) => id === task.id).days, task.days + 2);
+  assert.deepEqual(adjusted.project.levels, project.levels);
+  assert.throws(() => tool([{ op: 'generate' }], first.project), /exists/i);
+  assert.throws(() => tool([{ op: 'edit', changes: [{ op: 'upsert_task', task: { id: task.id, dependencies: [{ id: task.id }] } }] }], first.project));
+  assert.deepEqual(runDesignTool('casovara_inspect_plan', { project: adjusted.project }).analysis.construction, adjusted.analysis.construction);
 });
 
 test('Service tool generates chosen schemes on specified floors and adjusts routes atomically', () => {

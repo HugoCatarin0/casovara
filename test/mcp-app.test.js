@@ -78,11 +78,13 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
   assert.ok(inspect.inputSchema.required.includes('project'));
   assert.ok(definitions.casovara_edit_plan.inputSchema.required.includes('project'));
   assert.ok(definitions.casovara_design_services.inputSchema.required.includes('project'));
+  assert.ok(definitions.casovara_plan_construction.inputSchema.required.includes('project'));
   assert.equal(definitions.casovara_design_services._meta.ui.resourceUri, create._meta.ui.resourceUri);
   const { resources } = await call('resources/list');
   assert.equal(resources.find(({ uri }) => uri === create._meta.ui.resourceUri).mimeType, appMimeType);
   const { contents: [preview] } = await call('resources/read', { uri: create._meta.ui.resourceUri });
   assert.equal(preview.mimeType, appMimeType);
+  assert.match(preview.text, /drawConstruction/);
   assert.match(preview.text, /ui\/initialize/);
   assert.match(preview.text, /ui\/notifications\/tool-result/);
   assert.match(preview.text, /service-palette[^>]*>\{"electrical"/);
@@ -117,6 +119,10 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
   const verification = await tool(inspect.name, { project: drawing.structuredContent.project });
   assert.equal(verification.structuredContent.analysis.levels[0].services.electrical.nodes.length,
     drawing.structuredContent.project.levels[0].services.electrical.nodes.length);
+  const construction = await tool('casovara_plan_construction', { project, operations: [{ op: 'generate', startDate: '2027-03-01' }] });
+  assert.equal(construction.structuredContent.constructionChanged, true);
+  assert.ok(construction.structuredContent.analysis.construction.tasks.length > 10);
+  assert.ok(construction.structuredContent.analysis.construction.sequentialDays > construction.structuredContent.analysis.construction.workingDays);
   assert.deepEqual(await readdir(folder), []);
 });
 

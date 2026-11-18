@@ -1,6 +1,7 @@
 import { elements, levelBounds, projectArea, roomStyles } from './builder-engine.js';
 import { formatNumber } from './core.js';
 import { normalizeBuildingServices, serviceRunPoints, serviceSystems } from './building-services.js';
+import { normalizeConstructionSchedule, scheduleConstruction } from './construction-schedule.js';
 
 const copy = {
   pt: {
@@ -15,6 +16,7 @@ const copy = {
       ['Rever as circulações', 'Analisa a circulação na planta atual e sugere melhorias. Preserva as divisões existentes.'],
       ['Adicionar um escritório', 'Propõe uma forma de criar um escritório na planta atual, com janela e acesso pelo corredor.'],
       ['Gerar instalações', 'Gera propostas de eletricidade, águas e esgotos, VMC e ar condicionado para a casa atual. Preserva os esquemas que já existirem.'],
+      ['Planear a obra', 'Gera um plano de obra para a casa atual, com dependências, equipas e tarefas que possam avançar em paralelo. Preserva um plano existente.'],
     ],
     demo: 'Experimentar um T3', demoRequest: 'Gerar exemplo T3',
     prompt: 'Pedido para o assistente', placeholder: 'Ex.: desenha uma casa térrea de 110 m² com três quartos…',
@@ -23,6 +25,8 @@ const copy = {
     proposal: 'Rever proposta', current: 'Planta atual', suggested: 'Proposta', floor: 'Piso a pré-visualizar',
     area: 'Área interior', units: 'm²', levels: 'Pisos', rooms: 'Divisões', walls: 'Paredes', items: 'Objetos e vãos',
     services: 'Pontos e traçados', layers: 'Camada da proposta', architecture: 'Arquitetura',
+    construction: 'Plano de obra', noConstruction: 'Esta versão ainda não tem um plano de obra.',
+    workdays: 'Dias úteis', savedDays: 'Dias úteis ganhos face à sequência', critical: 'Caminho crítico das dependências',
     added: 'Adicionados', changed: 'Alterados', removed: 'Removidos',
     warnings: 'Pontos a rever', emptyPlan: 'Este piso não tem geometria para mostrar.',
     discard: 'Descartar proposta', apply: 'Aplicar à planta', discarded: 'Proposta descartada.',
@@ -47,6 +51,7 @@ const copy = {
       ['Review circulation', 'Assess circulation in the current floor plan and suggest improvements. Keep the existing rooms.'],
       ['Add a home office', 'Suggest a way to add a home office to the current floor plan, with a window and access from the hall.'],
       ['Generate building services', 'Generate electrical, plumbing, VMC ventilation and air-conditioning schemes for the house. Preserve existing schemes.'],
+      ['Plan the build', 'Generate a construction programme for the house, with dependencies, crews and opportunities for parallel tasks. Preserve any existing programme.'],
     ],
     demo: 'Try a three-bedroom example', demoRequest: 'Generate three-bedroom example',
     prompt: 'Request for the assistant', placeholder: 'E.g. draw a 110 m² single-storey house with three bedrooms…',
@@ -55,6 +60,8 @@ const copy = {
     proposal: 'Review proposal', current: 'Current plan', suggested: 'Proposal', floor: 'Storey to preview',
     area: 'Internal area', units: 'm²', levels: 'Storeys', rooms: 'Rooms', walls: 'Walls', items: 'Objects and openings',
     services: 'Points and routes', layers: 'Proposal layer', architecture: 'Architecture',
+    construction: 'Construction programme', noConstruction: 'There is no construction programme in this version.',
+    workdays: 'Workdays', savedDays: 'Workdays saved against sequential work', critical: 'Dependency critical path',
     added: 'Added', changed: 'Changed', removed: 'Removed',
     warnings: 'Points to review', emptyPlan: 'This storey has no geometry to display.',
     discard: 'Discard proposal', apply: 'Apply to plan', discarded: 'Proposal discarded.',
@@ -205,6 +212,12 @@ function serviceLayers(base, proposed) {
   return Object.keys(serviceSystems).filter((id) => floors.some(({ services }) => services?.[id]?.nodes?.length || services?.[id]?.runs?.length));
 }
 
+function constructionTimeline(project) {
+  const plan = normalizeConstructionSchedule(project?.constructionPlan);
+  try { return plan ? scheduleConstruction(plan) : null; }
+  catch { return null; }
+}
+
 function getWarnings(analysis) {
   if (!Array.isArray(analysis?.warnings)) return [];
   return analysis.warnings.map((warning) => typeof warning === 'string' ? warning : warning?.message)
@@ -248,6 +261,7 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
         <div class="cva-preview" data-cva="preview"></div>
         <ul class="cva-service-legend" data-cva="service-legend" hidden></ul>
         <dl class="cva-metrics" data-cva="metrics"></dl>
+        <section class="cva-construction" data-cva="construction" hidden></section>
         <div class="cva-changes" data-cva="changes"></div>
         <div class="cva-checks" data-cva="checks" hidden><h4>${t.warnings}</h4><ul data-cva="warnings"></ul></div>
         <p class="cva-stale" data-cva="stale" role="alert" hidden>${t.stale}</p>
@@ -286,6 +300,32 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
 
   function number(value) {
     return formatNumber(value, locale);
+  }
+
+  function renderConstruction(timeline) {
+    const section = $('construction');
+    section.hidden = !proposal.construction;
+    if (section.hidden) return;
+    const title = document.createElement('h4');
+    title.textContent = t.construction;
+    const overview = document.createElement('p');
+    section.replaceChildren(title, overview);
+    if (!timeline) { overview.textContent = t.noConstruction; return; }
+    const date = new Intl.DateTimeFormat(isPortuguese ? 'pt-PT' : 'en-GB', { dateStyle: 'medium', timeZone: 'UTC' });
+    const formatDate = (value) => date.format(new Date(value + 'T12:00:00Z'));
+    const dates = timeline.startDate && timeline.endDate ? `${formatDate(timeline.startDate)} – ${formatDate(timeline.endDate)} · ` : '';
+    overview.textContent = `${dates}${number(timeline.workingDays)} ${t.workdays.toLowerCase()}`;
+    const savings = document.createElement('p');
+    savings.textContent = `${t.savedDays} · ${number(timeline.savedDays)}`;
+    section.append(savings);
+    const idLookup = new Map(timeline.tasks.map((task) => [task.id, task.label]));
+    const path = timeline.criticalPath.map((id) => idLookup.get(id)).filter(Boolean);
+    if (path.length) {
+      const caption = document.createElement('p');
+      const size = path.length > 4 ? ` → … → ${path.at(-1)}` : '';
+      caption.textContent = `${t.critical} · ${path.slice(0, 4).join(' → ')}${size}`;
+      section.append(caption);
+    }
   }
 
   function snapshot() {
@@ -402,6 +442,7 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       section.append(label, value);
       return section;
     }));
+    renderConstruction(isSuggested ? proposal.construction?.suggested : proposal.construction?.current);
   }
 
   function renderProposal() {
@@ -437,7 +478,9 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
     const layers = serviceLayers(base, project);
     activeLayer = layers.find((id) => project.levels.some((floor) => JSON.stringify(floor.services?.[id]) !==
       JSON.stringify(base?.levels.find((previous) => previous.id === floor.id)?.services?.[id]))) ?? '';
-    proposal = { project, base, baseKey: JSON.stringify(base), analysis, differences: comparePlans(base, project), layers, stale: false };
+    const construction = JSON.stringify(project.constructionPlan) !== JSON.stringify(base?.constructionPlan)
+      ? { current: constructionTimeline(base), suggested: constructionTimeline(project) } : null;
+    proposal = { project, base, baseKey: JSON.stringify(base), analysis, differences: comparePlans(base, project), layers, construction, stale: false };
     compare = 'suggested';
     activeLevelIndex = Math.max(0, project.levels.findIndex(({ id }) => id === project.levelId));
     activeLevelId = project.levels[activeLevelIndex].id;
