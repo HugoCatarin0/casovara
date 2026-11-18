@@ -19,8 +19,8 @@ export function modelImage(scene, camera, width = 1600, height = 1200) {
   output.height = height;
   const context = output.getContext('2d');
   const backdrop = context.createRadialGradient(width * .53, height * .42, 0, width * .53, height * .42, width * .72);
-  backdrop.addColorStop(0, '#fbf9f1');
-  backdrop.addColorStop(1, '#e5e2d5');
+  backdrop.addColorStop(0, '#bfcdd2');
+  backdrop.addColorStop(1, '#7f95a3');
   context.fillStyle = backdrop;
   context.fillRect(0, 0, width, height);
   context.drawImage(model, 0, 0);

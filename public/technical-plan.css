@@ -1,0 +1,25 @@
+.cv-draft:has(> svg[data-drafting="technical"]) {
+  background-color: #edf3f6;
+}
+
+.cv-studio[data-tool="select"] .cv-draft svg[data-drafting="technical"] .cv-room-fill:hover {
+  stroke: #3a687f;
+}
+
+.cv-studio[data-tool="select"] .cv-draft svg[data-drafting="technical"] .cv-technical-wall:not(.cv-plan-wall-active):hover .cv-plan-wall-line {
+  fill: #9bb8c8;
+  stroke: #2e607c;
+  stroke-width: .012;
+}
+
+.cv-draft svg[data-drafting="technical"] .cv-room-caption {
+  font-variant-numeric: tabular-nums;
+}
+
+.cv-draft svg[data-drafting="technical"] .cv-active-shape {
+  stroke: #a64530;
+}
+
+.cv-draft svg[data-drafting="technical"] :is([data-plan-dimensions], [data-plan-opening-tag], [data-plan-room-dimensions]) {
+  pointer-events: none;
+}

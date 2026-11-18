@@ -18,6 +18,10 @@ A aplicação usa os idiomas do navegador e, quando disponível, o país enviado
 
 No editor 2D, clique ou arraste para traçar paredes e use `Enter` ou o botão de conclusão para terminar a cadeia. Pode ajustar a espessura antes de desenhar, mover os vértices e enquadrar a seleção. No 3D, arraste para rodar, use o botão direito ou `Shift` para deslocar e use a roda ou dois dedos para aproximar. Clique num elemento para o selecionar também na planta. Na vista dividida, arraste o separador para redimensionar os dois painéis. O renderizador usa profundidade por píxel com WebGL e uma alternativa por software.
 
+Use `Ctrl/⌘ + K` para localizar ferramentas, compartimentos e vãos, ou `1`, `2` e `3` para alternar vistas. O desenho técnico mostra espessuras, hachuras e identificadores de vãos. O menu de visualização controla as cotas interiores e a referência ao piso inferior. Selecione uma parede para editar camadas, altura, cota de base e acabamento por face e consultar medidas descontadas dos vãos.
+
+O painel **Ambiente 3D** controla a apresentação em Materiais, Maquete ou Técnico, a altura do corte, o terreno, o mobiliário e as sombras. As vistas guardadas incluem estes controlos. As predefinições de luz usam a direção e a altura solar escolhidas no painel para estudos visuais.
+
 ## Projetos, alojamento e domínios
 
 O planeador guarda cada projeto num ficheiro JSON. Um cookie de sessão associa os ficheiros ao navegador. É possível transferir um projeto para outro navegador através da exportação e importação de ficheiros. O cookie de sessão e o de idioma expiram após um ano. O site público também pode guardar o tema selecionado num cookie.
@@ -51,4 +55,4 @@ O levantamento público abrangeu a página inicial, o editor e os fluxos da bibl
 | Guias e calculadoras | Onze calculadoras com resultados interativos e guias de utilização. |
 | Gestão de projetos | Ficheiros por sessão, abertura, duplicação e partilha revogável de uma cópia. |
 
-Foram testados os fluxos de desenho, pisos, exportação e reimportação, biblioteca, relatório e partilha no Chromium. Os testes de layout abrangeram larguras de 320 a 1440 píxeis. A cobertura ilustrativa, os consumos por área e os guias escritos são simplificações desta versão. Ficam por implementar ferramentas avançadas como mansardas, janelas de cobertura, painéis fotovoltaicos, composições multicamada e renderização fotorrealista.
+Foram testados os fluxos de desenho, pisos, edição de paredes e vãos, opções de visualização, exportação e reimportação, biblioteca, relatório e partilha no Chromium. Os testes de layout abrangeram larguras de 320 a 1440 píxeis. A cobertura ilustrativa, os consumos por área e os guias escritos são simplificações desta versão. Ficam por implementar ferramentas avançadas como mansardas, janelas de cobertura, painéis fotovoltaicos, composições detalhadas de lajes e coberturas e renderização fotorrealista.

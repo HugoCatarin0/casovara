@@ -1,0 +1,100 @@
+.cv-simulator-panel {
+  --sim-surface: var(--studio-surface, #202b3a);
+  --sim-border: var(--studio-line, #42546a);
+  --sim-text: var(--studio-ink, #eef3f8);
+  --sim-muted: var(--studio-muted, #b8c5d6);
+  --sim-accent: var(--studio-accent, #e79859);
+  position: absolute;
+  z-index: 8;
+  inset: 3.75rem .85rem auto auto;
+  width: min(20rem, calc(100% - 1.7rem));
+  max-height: calc(100% - 7.35rem);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--sim-text);
+  background: var(--sim-surface);
+  border: 1px solid var(--sim-border);
+  border-radius: .75rem;
+  box-shadow: 0 .8rem 2rem #0c121c4d;
+}
+.cv-simulator-panel[hidden] { display: none; }
+.cv-sim-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .45rem;
+  padding: .45rem .7rem .45rem .9rem;
+  border-bottom: 1px solid var(--sim-border);
+}
+.cv-sim-head h2 { margin: 0; font-size: .875rem; font-weight: 650; line-height: 1.25; }
+.cv-sim-close {
+  width: 2rem;
+  height: 2rem;
+  display: grid;
+  place-items: center;
+  color: var(--sim-muted);
+  background: transparent;
+  border: 0;
+  border-radius: .35rem;
+  cursor: pointer;
+}
+.cv-sim-close:hover { color: var(--sim-text); background: color-mix(in srgb, var(--sim-border) 75%, transparent); }
+.cv-sim-content { overflow: auto; overscroll-behavior: contain; padding: .6rem .85rem .85rem; display: grid; gap: .7rem; }
+.cv-sim-set {
+  border: 1px solid var(--sim-border);
+  min-width: 0;
+  margin: 0;
+  padding: .45rem .55rem .58rem;
+  display: grid;
+  gap: .4rem;
+  border-radius: .5rem;
+}
+.cv-sim-set legend { padding: 0 .3rem; color: var(--sim-muted); font-size: .69rem; font-weight: 680; }
+.cv-sim-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .2rem; }
+.cv-sim-modes label { position: relative; min-inline-size: 0; }
+.cv-sim-modes input { position: absolute; opacity: 0; inline-size: 1px; block-size: 1px; }
+.cv-sim-modes span {
+  min-height: 1.85rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  border-radius: .35rem;
+  font-size: .68rem;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.cv-sim-modes :checked + span {
+  border-color: color-mix(in srgb, var(--sim-accent) 65%, var(--sim-border));
+  background: color-mix(in srgb, var(--sim-accent) 21%, var(--sim-surface));
+  color: var(--sim-text);
+}
+.cv-sim-modes :focus-visible + span, .cv-sim-close:focus-visible { outline: 2px solid var(--sim-accent); outline-offset: 1px; }
+.cv-sim-preset, .cv-sim-toggle, .cv-sim-range { font-size: .72rem; line-height: 1.35; }
+.cv-sim-preset { display: flex; align-items: center; justify-content: space-between; gap: .4rem; }
+.cv-sim-preset select {
+  flex: 1;
+  max-width: 10rem;
+  min-width: 0;
+  padding: .3rem .35rem;
+  border: 1px solid var(--sim-border);
+  border-radius: .35rem;
+  background: var(--sim-surface);
+  color: var(--sim-text);
+  font: inherit;
+}
+.cv-sim-range { display: grid; gap: .14rem; }
+.cv-sim-range > span { display: flex; justify-content: space-between; align-items: center; gap: .25rem; }
+.cv-sim-range output { color: var(--sim-muted); font-size: .69rem; font-variant-numeric: tabular-nums; }
+.cv-sim-range input { width: 100%; margin: 0; accent-color: var(--sim-accent); min-height: 1.12rem; cursor: ew-resize; }
+.cv-sim-toggles { display: flex; flex-wrap: wrap; column-gap: .7rem; row-gap: .15rem; }
+.cv-sim-toggle { min-height: 1.55rem; display: flex; align-items: center; gap: .28rem; cursor: pointer; }
+.cv-sim-toggle input { margin: 0; accent-color: var(--sim-accent); }
+.cv-sim-toggle:has(input:disabled) { color: var(--sim-muted); cursor: default; }
+.cv-sim-note { margin: 0; color: var(--sim-muted); font-size: .66rem; }
+@media (max-width: 680px) {
+  .cv-simulator-panel { inset-inline-end: .45rem; inset-block-start: 3.2rem; width: min(20rem, calc(100% - .9rem)); max-height: calc(100% - 5.75rem); }
+}
+@media (prefers-color-scheme: light) {
+  .cv-simulator-panel { --sim-text: var(--studio-ink, #263440); --sim-muted: var(--studio-muted, #53636e); }
+}

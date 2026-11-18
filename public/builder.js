@@ -2,8 +2,13 @@ import { openBuilderReport } from './builder-report.js';
 import { openBuilderShare } from './builder-share.js';
 import { estimateProject, formatMoney, formatNumber, projectApi, systems } from './core.js';
 import { makeTemplate, templates } from './templates.js';
+import { applyWallAssembly, effectiveWallHeight, getWallSpec, normalizeOpening, normalizeWallSpec, wallAssemblies, wallSpecThickness } from './wall-spec.js';
+import { renderOpeningFields, renderWallInspector, syncWallInspector } from './wall-inspector.js';
 import { compileScene } from './model-renderer.js';
 import { createModelViewer, initialModelCamera, modelImage } from './model-viewer.js';
+import { dimensionLine, draftingBounds, draftingInk, interiorPlanDimensions, lowerFloorReference, openingSymbol, openingTags, openingsIndex, overallPlanDimensions, planPatterns, planRoomFill, selectedWallDimension, technicalWall } from './technical-plan.js';
+import { simulatorDefaults, renderSimulatorControls, readSimulatorOption, syncSimulatorControls } from './simulator-controls.js';
+import { normalizeSimulator } from './simulator.js';
 import {
   clamp, clone, elements, escapeHtml as esc, findWall, levelBounds, makeItem, makeLevel, makeProject, makeRoom,
   makeWall, modelFaces, normalizeProject, point, projectArea, roomStyles, snapTo, uid, wallLength,
@@ -54,9 +59,12 @@ const icons = {
   file: '<path d="M6 3h8l4 4v14H6Zm8 0v5h4M9 12h6m-6 4h6"/>',
   external: '<path d="M13 4h7v7m0-7-9 9m7 0v7H4V6h7"/>',
 };
+icons.dock = '<rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M14.5 5v14m3-10h.5m-.5 3h.5m-.5 3h.5"/>';
+icons.sun = '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.5 1.5m10.4 10.4 1.5 1.5m0-13.4-1.5 1.5M6.8 17.2l-1.5 1.5"/>';
 const icon = (name, size = 19) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.65" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.room}</svg>`;
 const labels = {
-  commands: ['Pesquisar ferramentas', 'Find tools'], commandPlaceholder: ['Pesquise uma ação ou ferramenta', 'Search actions or tools'], commandEmpty: ['Nenhuma ação encontrada.', 'No matching actions.'], guides: ['Guias de construção', 'Construction guides'], calculators: ['Calculadoras', 'Calculators'],
+  commands: ['Pesquisar no projeto', 'Search project'], commandPlaceholder: ['Pesquise uma ferramenta, divisão ou vão', 'Search tools, rooms, or openings'], commandEmpty: ['Nenhum resultado.', 'No matching results.'], guides: ['Guias de construção', 'Construction guides'], calculators: ['Calculadoras', 'Calculators'],
+  commandTools: ['Ferramentas', 'Tools'], commandEntities: ['Elementos do projeto', 'Project elements'],
   back: ['Início', 'Home'], builder: ['Estúdio de projeto', 'Design studio'], projects: ['Projetos', 'Projects'], project: ['Projeto', 'Project'], name: ['Nome do projeto', 'Project name'],
   change: ['Mudar nome', 'Rename'], new: ['Novo projeto', 'New project'], templates: ['Modelos de casa', 'House templates'], import: ['Importar projeto', 'Import project'], export: ['Exportar', 'Export'], share: ['Partilhar', 'Share'], sharing: ['Partilhar projeto', 'Share project'], fileShare: ['Envie o ficheiro do projeto para que outra pessoa possa abrir e editar a planta.', 'Send the project file so someone else can open and edit the floor plan.'],
   exportFile: ['Ficheiro do projeto (.json)', 'Project file (.json)'], exportPlan: ['Planta vetorial (.svg)', 'Vector drawing (.svg)'], exportPng: ['Imagem (.png)', 'Image (.png)'], print: ['Imprimir planta', 'Print plan'],
@@ -92,6 +100,12 @@ const labels = {
   tryTools: ['Selecione Compartimento ou Parede para começar.', 'Select Room or Wall to get started.'], emptyPlan: ['Desenhe a primeira divisão', 'Draw your first room'], empty3d: ['O seu modelo aparece aqui à medida que desenha a planta.', 'Your model appears here as you draw the plan.'],
   grid: ['Grelha', 'Grid'], snap: ['Ajustar à grelha', 'Snap to grid'], dimensions: ['Dimensões gerais', 'Overall dimensions'], furniture: ['Mobiliário', 'Furniture'], labels: ['Identificação de divisões', 'Room labels'], settings: ['Opções de visualização', 'Display options'],
   language: ['Idioma', 'Language'], keyboard: ['Atalhos de teclado', 'Keyboard shortcuts'], help: ['Ajuda', 'Help'], fitLabel: ['Enquadrar', 'Fit'],
+  toolDeck: ['Mostrar ou recolher ferramentas', 'Show or collapse tools'], inspector: ['Painel de propriedades', 'Properties panel'],
+  drawGroup: ['Desenho', 'Drawing'], navigateGroup: ['Navegação', 'Navigation'], componentsGroup: ['Elementos', 'Elements'], referenceGroup: ['Referência', 'Reference'],
+  shortPan: ['Mover', 'Pan'], shortWall: ['Parede', 'Wall'], shortAngled: ['Inclinada', 'Angled'], shortRoom: ['Divisão', 'Room'], shortDetect: ['Detetar', 'Detect'], shortDivide: ['Dividir', 'Divide'], shortImage: ['Imagem base', 'Plan image'],
+  planSheet: ['Vista de planta', 'Plan view'], terrainView: ['Vista do modelo', 'Model view'], previewLabel: ['Ambiente 3D', '3D environment'],
+  drawingStyle: ['Estilo da planta', 'Plan style'], technical: ['Desenho técnico', 'Technical drawing'], furnished: ['Planta ilustrada', 'Illustrated plan'],
+  openingTags: ['Identificadores e medidas dos vãos', 'Opening tags and widths'], wallLayers: ['Camadas e hachuras das paredes', 'Wall layers and hatching'], roomDimensions: ['Cotas por compartimento', 'Room dimensions'], lowerLevel: ['Piso inferior em referência', 'Show floor below'],
   roomTotal: ['Compartimentos', 'Rooms'], wallTotal: ['Comprimento de paredes', 'Wall length'], itemTotal: ['Objetos colocados', 'Objects placed'], openings: ['Vãos', 'Openings'], groupBath: ['Equipamento e exterior', 'Fixtures and outdoor'],
   copy: ['Copiar', 'Copy'], csv: ['Descarregar CSV', 'Download CSV'], copied: ['Copiado.', 'Copied.'], copyError: ['Não foi possível copiar.', 'Could not copy.'],
   notesPlaceholder: ['Anote decisões, materiais ou perguntas sobre o projeto.', 'Add decisions, materials, or questions about the project.'], notesLabel: ['Notas do projeto', 'Project notes'],
@@ -123,6 +137,17 @@ const categories = [
   { id: 'visualise', icon: 'camera', tools: ['view3d', 'camera', 'cameraList', 'exportPng'] },
 ];
 
+const shortcuts = { select: 'V', pan: 'H', wall: 'W', angled: 'A', room: 'R', detect: 'D', divide: 'X', door: 'G', window: 'O', measure: 'M', label: 'T', fit: 'F' };
+const structureGroups = [
+  ['navigateGroup', ['select', 'pan']],
+  ['drawGroup', ['wall', 'angled', 'room', 'detect', 'divide']],
+  ['componentsGroup', ['door', 'window', 'stair', 'rail']],
+  ['referenceGroup', ['image']],
+];
+const fieldForMode = { plan: 'plan', '3d': 'view3d', split: 'split' };
+const modeKeys = { '1': 'plan', '2': 'view3d', '3': 'split' };
+const shortToolLabels = { pan: 'shortPan', wall: 'shortWall', angled: 'shortAngled', room: 'shortRoom', detect: 'shortDetect', divide: 'shortDivide', image: 'shortImage' };
+
 export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/app', setLocale }) {
   const isPt = locale === 'pt-PT';
   const tr = (key) => labels[key]?.[isPt ? 0 : 1] ?? key;
@@ -151,9 +176,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   let roomType = 'living';
   let activeFinish = 'natural';
   let newWallThickness = null;
+  let newWallAssembly = 'custom';
   let planOptionsKey = '';
   let objectType = 'door';
-  let viewMode = 'plan';
+  let viewMode = Object.hasOwn(fieldForMode, query.get('view')) ? fieldForMode[query.get('view')] : 'plan';
   let selected = null;
   let pendingPoint = null;
   let hoverPoint = null;
@@ -165,13 +191,15 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   let paintedGrid = '';
   let drag = null;
   let inspectorTab = 'properties';
-  let inspectorOpen = false;
+  let inspectorOpen = window.matchMedia('(min-width: 1000px)').matches;
+  let toolbarOpen = true;
   let mobileCatalog = false;
   let vat = 23;
   let allLevels = true;
-  let cutaway = true;
+  let cutaway = query.get('model') !== 'exterior';
   let showRoof = true;
-  let modelScope = 'through';
+  let modelScope = cutaway ? 'through' : 'all';
+  let simulator = { ...simulatorDefaults };
   let sceneCache;
   let toastTimer;
   let modal = '';
@@ -181,7 +209,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   let pen = new Map();
   let pinch = null;
   let preventClick = false;
-  let settings = { grid: true, snap: true, dimensions: true, furniture: true, labels: true };
+  let settings = { grid: true, snap: true, dimensions: true, furniture: true, labels: true,
+    drawingStyle: 'technical', openingTags: true, wallLayers: true, roomDimensions: false, lowerLevel: false };
   const history = [];
   const future = [];
   const controller = new AbortController();
@@ -199,6 +228,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       zoom: Number.isFinite(cam.zoom) ? clamp(cam.zoom, .3, 9) : 1,
       panX: Number.isFinite(cam.panX) ? clamp(cam.panX, -20, 20) : 0,
       panY: Number.isFinite(cam.panY) ? clamp(cam.panY, -20, 20) : 0,
+      environment: cam.environment ? normalizeSimulator(cam.environment) : undefined,
     })) : [];
     state.levels.forEach((entry, index) => {
       const source = raw.levels.find(({ id }) => id === entry.id) ?? raw.levels[index];
@@ -213,6 +243,16 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       for (const wall of entry.walls) {
         const original = source?.walls?.find?.((item) => item?.id === wall.id);
         if (entry.rooms.some(({ id }) => original?.roomId === id)) wall.roomId = original.roomId;
+        const spec = normalizeWallSpec(original?.spec, wall.thickness);
+        if (spec) {
+          wall.spec = spec;
+          wall.thickness = wallSpecThickness(spec);
+        }
+      }
+      for (const item of entry.items.filter(({ type }) => elements[type].opening)) {
+        const original = source?.items?.find?.((candidate) => candidate?.id === item.id);
+        const opening = normalizeOpening(original?.opening, item.type);
+        if (opening) item.opening = opening;
       }
       const image = source?.image;
       if (image && typeof image.src === 'string' && /^data:image\/(png|jpeg|webp);base64,[a-zA-Z\d+/=]+$/.test(image.src) && image.src.length <= 1_250_000 && [image.x, image.y, image.width, image.height, image.opacity].every(Number.isFinite)) {
@@ -226,8 +266,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   function level() { return viewLevel(project, project.levelId) ?? project.levels[0]; }
   function systemOptions(value) { return systems.map((system) => `<option value="${str(system.id)}" ${system.id === value ? 'selected' : ''}>${str(lng(system.name))}</option>`).join(''); }
   function roomOptions(value) { return roomTypes.map((type) => `<option value="${type}" ${type === value ? 'selected' : ''}>${str(localized(roomStyles[type]))}</option>`).join(''); }
-  function toolbarButton(action, symbol, key, extra = '', visibleText = false) {
-    return `<button type="button" class="cv-tool" data-action="${action}" ${extra} title="${str(tr(key))}" aria-label="${str(tr(key))}">${icon(symbol)}${visibleText ? `<span>${str(tr(key))}</span>` : ''}</button>`;
+  function toolbarButton(action, symbol, key, extra = '', visibleText = false, shortcut = '') {
+    const title = str(shortcut ? `${tr(key)} (${shortcut})` : tr(key));
+    const caption = typeof visibleText === 'string' ? visibleText : key;
+    return `<button type="button" class="cv-tool" data-action="${action}" ${extra} ${shortcut ? `aria-keyshortcuts="${shortcut}"` : ''} title="${title}" aria-label="${str(tr(key))}">${icon(symbol)}${visibleText ? `<span>${str(tr(caption))}</span>` : ''}${shortcut ? `<kbd aria-hidden="true">${shortcut}</kbd>` : ''}</button>`;
   }
   function status(statusKey) {
     const target = root.querySelector('[data-role="status"]');
@@ -237,14 +279,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
 
   root.innerHTML = `<div class="cv-studio" lang="${isPt ? 'pt-PT' : locale === 'en-PT' ? 'en-GB' : 'en'}">
     <header class="cv-top">
-      <a class="cv-builder-brand" href="${str(homeUrl)}" aria-label="Casovara · ${tr('back')}"><img src="/brand.svg" width="28" height="28" alt=""><b>casovara</b></a>
+      <a class="cv-builder-brand" href="${str(homeUrl)}" aria-label="Casovara · ${tr('back')}"><img src="/brand.svg" width="26" height="26" alt=""><b>casovara</b></a>
       <div class="cv-project-heading">
         <button class="cv-folder" data-action="projects" type="button" title="${tr('projects')}" aria-label="${tr('projects')}">${icon('folder')}</button>
         <label><span class="cv-sr-only">${tr('name')}</span><input data-role="name" data-field="name" maxlength="95" value="${str(project.name)}"></label>
         <span class="cv-status" data-role="status" aria-live="polite"></span>
       </div>
       <div class="cv-top-actions">
-        ${toolbarButton('commands', 'search', 'commands')}
+        <button class="cv-tool cv-search-trigger" type="button" data-action="commands" aria-label="${tr('commands')}" title="${tr('commands')}">${icon('search', 16)}<span>${tr('commands')}</span><kbd>⌘/Ctrl K</kbd></button>
         ${toolbarButton('help', 'info', 'help')}
         ${toolbarButton('export', 'export', 'export', '', true)}
         <button class="cv-button cv-primary" data-action="save" type="button" aria-label="${tr('save')}">${icon('save', 17)}<span>${tr('save')}</span></button>
@@ -253,7 +295,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     <div class="cv-ribbon" aria-label="${tr('align')}">
       <div class="cv-history">${toolbarButton('undo', 'undo', 'undo')}${toolbarButton('redo', 'redo', 'redo')}</div>
       <div class="cv-categories" data-role="categories"></div>
-      ${toolbarButton('settings', 'settings', 'settings')}
+      <div class="cv-ribbon-actions">
+        ${toolbarButton('settings', 'settings', 'settings', '', true)}
+        ${toolbarButton('toggle-tools', 'chevron', 'toolDeck', 'aria-expanded="true" aria-controls="cv-tool-deck"')}
+      </div>
     </div>
     <main class="cv-workspace">
       <div class="cv-stage">
@@ -264,14 +309,16 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
           <div class="cv-level-control">
             ${icon('layers', 17)}<select data-field="levelId" aria-label="${tr('levelSelect')}"></select>${toolbarButton('levels', 'plus', 'levels')}
           </div>
-          <button class="cv-inspector-toggle cv-tool" type="button" data-action="inspector" title="${tr('info')}" aria-label="${tr('info')}">${icon('settings')}</button>
+          <button class="cv-inspector-toggle cv-tool" type="button" data-action="inspector" aria-controls="cv-studio-inspector" title="${tr('inspector')}" aria-label="${tr('inspector')}">${icon('dock')}</button>
+        </div>
+        <div class="cv-tool-deck" id="cv-tool-deck">
+          <div class="cv-drawing-tools" data-role="tools" role="group" aria-label="${tr('mode')}"></div>
+          <div class="cv-plan-options" data-role="plan-options" role="group" aria-label="${tr('drawOptions')}" hidden></div>
         </div>
         <div class="cv-view" data-role="view" data-mode="plan">
           <section class="cv-draft" aria-label="${tr('plan')}">
             <svg data-role="plan" xmlns="http://www.w3.org/2000/svg" aria-label="${tr('plan')}" role="img" tabindex="0" preserveAspectRatio="none"><g data-plan-grid pointer-events="none"></g><g data-plan-scene></g><g data-plan-overlay></g></svg>
             <div class="cv-empty" data-role="empty" hidden><b>${tr('emptyPlan')}</b><p>${tr('tryTools')}</p><button class="cv-button" data-action="new" type="button">${tr('templates')}</button></div>
-            <div class="cv-drawing-tools" data-role="tools" role="group" aria-label="${tr('mode')}"></div>
-            <div class="cv-plan-options" data-role="plan-options" role="group" aria-label="${tr('drawOptions')}" hidden></div>
             <div class="cv-canvas-controls cv-plan-controls">
               <div class="cv-plan-reference">
                 <span class="cv-compass" aria-label="${tr('north')}" title="${tr('north')}">${icon('north', 18)}<small>N</small></span>
@@ -296,7 +343,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
               <select data-field="modelProjection" aria-label="${tr('modelProjection')}">
                 <option value="perspective">${tr('perspective')}</option><option value="orthographic">${tr('orthographic')}</option>
               </select>
+              ${toolbarButton('simulator', 'sun', 'previewLabel', 'aria-expanded="false" aria-controls="cv-simulator-panel"', true)}
             </div>
+            ${renderSimulatorControls(locale, simulator)}
             <p class="cv-empty" data-role="empty-model" hidden>${tr('empty3d')}</p>
             <div class="cv-canvas-controls cv-model-controls">
               <button class="cv-model-bearing cv-tool" data-action="cameraList" type="button" title="${tr('modelOrient')}" aria-label="${tr('modelOrient')}">${icon('north', 17)}<span data-role="bearing"></span></button>
@@ -308,7 +357,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         </div>
         <footer class="cv-stage-footer"><span data-role="hint"></span><span data-role="scale"></span></footer>
       </div>
-      <aside class="cv-inspector" aria-label="${tr('info')}" data-role="inspector"></aside>
+      <aside class="cv-inspector" id="cv-studio-inspector" aria-label="${tr('inspector')}" data-role="inspector"></aside>
     </main>
     <dialog class="cv-dialog" data-role="dialog"></dialog>
     <input type="file" accept="application/json,.json,.casovara" hidden data-role="file"><input type="file" accept="image/png,image/jpeg,image/webp" hidden data-role="file-image">
@@ -321,6 +370,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   const planOverlay = plane.querySelector('[data-plan-overlay]');
   const fitSelected = root.querySelector('[data-action="fit-selection"]');
   const model = root.querySelector('[data-role="model"]');
+  const simulatorPanel = root.querySelector('[data-role="simulator-panel"]');
+  const simulatorToggle = root.querySelector('.cv-model-toolbar [data-action="simulator"]');
+  const toolDeck = root.querySelector('#cv-tool-deck');
+  const deckToggle = root.querySelector('[data-action="toggle-tools"]');
+  const inspectorToggle = root.querySelector('[data-action="inspector"]');
   const dialog = root.querySelector('[data-role="dialog"]');
   const studioPanel = root.querySelector('[data-role="inspector"]');
   const view = root.querySelector('[data-role="view"]');
@@ -420,6 +474,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     savedRevision = 0;
     selected = null;
     newWallThickness = null;
+    newWallAssembly = 'custom';
     drag = null;
     pendingPoint = null;
     history.length = 0;
@@ -507,31 +562,41 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     root.querySelector('[data-action="model-roof"]').setAttribute('aria-pressed', String(showRoof && !cutaway));
     root.querySelector('[data-field="modelScope"]').value = modelScope;
     root.querySelector('[data-role="scale"]').hidden = viewMode === 'view3d';
+    if (viewMode === 'plan') setSimulatorOpen(false);
+  }
+  function setSimulatorOpen(visible) {
+    simulatorPanel.hidden = !visible;
+    simulatorToggle.setAttribute('aria-expanded', String(visible));
   }
   function updateTools() {
     studio.dataset.tool = tool;
     studio.dataset.inspector = String(inspectorOpen);
     studio.dataset.catalog = String(mobileCatalog);
+    toolDeck.hidden = !toolbarOpen;
+    deckToggle.setAttribute('aria-expanded', String(toolbarOpen));
+    inspectorToggle.setAttribute('aria-expanded', String(inspectorOpen));
     const active = categories.find(({ id }) => id === category);
     const categoryRow = root.querySelector('[data-role="categories"]');
     const toolRow = root.querySelector('[data-role="tools"]');
     const categoryScroll = categoryRow.scrollLeft, toolScroll = toolRow.scrollLeft;
+    const focused = [categoryRow, toolRow].some((row) => row.contains(document.activeElement)) ? document.activeElement?.dataset.action : '';
     categoryRow.innerHTML = categories.map((cat) => toolbarButton(`category:${cat.id}`, cat.icon, cat.id, `aria-pressed="${category === cat.id}"`, true)).join('');
     categoryRow.scrollLeft = categoryScroll;
     const sameTools = toolRow.dataset.category === category;
     toolRow.dataset.category = category;
-    let tools = active.tools;
-    if (category !== 'structure') tools = ['select', 'pan', ...tools];
-    toolRow.innerHTML = tools.map((id) => {
+    const groups = category === 'structure' ? structureGroups : [['navigateGroup', ['select', 'pan']], [category, active.tools]];
+    const renderTool = (id) => {
       const setting = toolSettings[id] || {
         catalog: ['furnish', 'furnish'], slab: ['room', 'outer'], deck: ['room', 'deck'], stair: ['stair', 'stair'], rail: ['rail', 'rail'], image: ['image', 'image'],
         view3d: ['cube', 'view3d'], camera: ['camera', 'camera'], cameraList: ['layers', 'cameraList'], export: ['export', 'export'], exportPng: ['image', 'exportPng'], autoDimensions: ['measure', 'autoDimensions'],
       }[id];
       const action = ['levels', 'image', 'view3d', 'camera', 'cameraList', 'export', 'exportPng', 'autoDimensions', 'roof', 'ceiling', 'flooring', 'catalog'].includes(id) ? id : `tool:${id}`;
       const pressed = tool === id || (id === 'ceiling' && !!level().ceiling) || (id === 'roof' && !['none', undefined].includes(level().roof)) || (id === 'catalog' && tool === 'item') || (id === 'slab' && tool === 'room' && roomType === 'circulation') || (id === 'deck' && tool === 'room' && roomType === 'outdoor');
-      return toolbarButton(action, ...setting, `aria-pressed="${pressed}"`, true);
-    }).join('');
+      return toolbarButton(action, ...setting, `aria-pressed="${pressed}"`, shortToolLabels[id] ?? true, shortcuts[id]);
+    };
+    toolRow.innerHTML = groups.map(([label, tools]) => `<div class="cv-tool-group" role="group" aria-label="${tr(label)}"><span class="cv-tool-group-label" aria-hidden="true">${tr(label)}</span><div>${tools.map(renderTool).join('')}</div></div>`).join('');
     toolRow.scrollLeft = sameTools ? toolScroll : 0;
+    if (focused) root.querySelector(`[data-action="${focused}"]`)?.focus({ preventScroll: true });
     root.querySelector('[data-action="undo"]').disabled = !history.length;
     root.querySelector('[data-action="redo"]').disabled = !future.length;
     fitSelected.disabled = !selected;
@@ -545,18 +610,31 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     renderPlanOptions();
   }
 
-  function wallThickness() { return newWallThickness ?? profile().defaults?.wallThickness ?? .15; }
+  function drawingWallSpec() {
+    if (newWallAssembly === 'custom') return undefined;
+    const basis = normalizeWallSpec({ exteriorFinish: 'lime', interiorFinish: 'plaster', exteriorSide: -1 }, profile().defaults?.wallThickness);
+    return applyWallAssembly(basis, newWallAssembly);
+  }
+
+  function wallThickness() {
+    const spec = drawingWallSpec();
+    return spec ? wallSpecThickness(spec) : newWallThickness ?? profile().defaults?.wallThickness ?? .15;
+  }
 
   function renderPlanOptions() {
     const options = root.querySelector('[data-role="plan-options"]');
     const wall = ['wall', 'angled'].includes(tool);
     const size = wallThickness();
     const step = gridStep();
-    const nextKey = [tool, size, step, roomType, settings.snap].join(':');
+    const nextKey = [tool, size, step, roomType, settings.snap, newWallAssembly].join(':');
     options.hidden = !wall && tool !== 'room' && tool !== 'measure';
     if (options.hidden || nextKey === planOptionsKey) return;
     planOptionsKey = nextKey;
-    const field = wall ? `<label>${tr('thickness')} <input type="number" inputmode="decimal" data-field="newWallThickness" min=".08" max="1" step=".01" value="${size}"> <span>m</span></label>`
+    const assemblies = Object.keys(wallAssemblies).filter((id) => id !== 'custom').sort((a, b) => Number(b === project.systemId) - Number(a === project.systemId));
+    const field = wall ? `<label>${isPt ? 'Composição' : 'Assembly'} <select data-field="newWallAssembly">
+      <option value="custom">${isPt ? 'Espessura livre' : 'Free thickness'}</option>
+      ${assemblies.map((id) => `<option value="${id}" ${id === newWallAssembly ? 'selected' : ''}>${wallAssemblies[id].label[isPt ? 0 : 1]}</option>`).join('')}
+      </select></label><label>${tr('thickness')} <input type="number" inputmode="decimal" data-field="newWallThickness" min=".08" max="1" step=".001" value="${size}" ${newWallAssembly !== 'custom' ? 'disabled' : ''}> <span>m</span></label>`
       : tool === 'room' ? `<label>${tr('type')} <select data-field="roomType">${roomOptions(roomType)}</select></label>` : '';
     options.innerHTML = `<span class="cv-plan-option-name">${tr(tool)}</span>${field}
       <button type="button" class="cv-tool cv-plan-snap" data-action="snap-plan" aria-pressed="${settings.snap}" aria-label="${tr('snap')}" title="${tr('temporarySnapOff')}">
@@ -575,9 +653,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
 
   function currentModelScene() {
-    const key = [project, revision, project.levelId, cutaway, showRoof, modelScope, selected?.kind, selected?.id];
+    const key = [project, revision, project.levelId, cutaway, showRoof, modelScope, selected?.kind, selected?.id, simulator];
     if (!sceneCache?.key.every((value, index) => value === key[index])) {
-      const faces = modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected, site: true });
+      const faces = modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected, simulator });
       sceneCache = { key, scene: compileScene(faces) };
     }
     return sceneCache.scene;
@@ -588,10 +666,16 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
 
   const finishes = { wood: '#d9c4a1', ceramic: '#dce5e1', concrete: '#deded6', stone: '#e5dcd1' };
+  const technicalDrawing = () => settings.drawingStyle === 'technical';
   function roomShape(room, active = false) {
     const style = roomStyles[room.type];
-    const fill = finishes[room.finish] || style.fill;
-    return `<rect data-shape="rooms" data-id="${room.id}" class="cv-room-fill${active ? ' cv-active-shape' : ''}" x="${room.x}" y="${room.y}" width="${room.w}" height="${room.h}" fill="${fill}" stroke="${style.floor}" stroke-width=".035" ${room.type === 'outdoor' ? 'stroke-dasharray=".13 .12"' : ''}/>`;
+    const technical = technicalDrawing();
+    const fill = technical ? planRoomFill(room) : finishes[room.finish] || style.fill;
+    const box = `x="${room.x}" y="${room.y}" width="${room.w}" height="${room.h}"`;
+    const stroke = active && technical ? draftingInk.accent : technical ? '#99acb8' : style.floor;
+    const outdoor = room.type === 'outdoor';
+    return `<rect data-shape="rooms" data-id="${room.id}" class="cv-room-fill${active ? ' cv-active-shape' : ''}" ${box} fill="${fill}" stroke="${stroke}" stroke-width=".035" ${outdoor ? 'stroke-dasharray=".13 .12"' : ''}/>` +
+      (technical && outdoor ? `<rect ${box} fill="url(#cv-plan-outdoor)" pointer-events="none"/>` : '');
   }
   function furnitureOutline(item) {
     const radians = item.angle * Math.PI / 180;
@@ -617,33 +701,30 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const position = offsets.map(([x, y]) => point(center.x + room.w * x, center.y + room.h * y)).find(({ x, y }) =>
       x - halfW >= room.x && x + halfW <= room.x + room.w && y - halfH >= room.y && y + halfH <= room.y + room.h &&
       !obstacles.some((item) => Math.abs(x - item.x) < halfW + item.halfW && Math.abs(y - item.y) < halfH + item.halfH)) || center;
-    const backdrop = position === center ? '#fffdf4' : finishes[room.finish] || roomStyle.fill;
+    const technical = technicalDrawing();
+    const backdrop = technical ? draftingInk.halo : position === center ? '#fffdf4' : finishes[room.finish] || roomStyle.fill;
+    const titleColor = technical ? draftingInk.text : '#29352e';
+    const areaColor = technical ? draftingInk.line : '#425448';
     const baseline = position.y + size * (.32 - .54 * (titles.length - 1 + Number(showArea)));
     return `<g class="cv-room-caption" pointer-events="none" text-anchor="middle">
-      <text x="${position.x}" y="${baseline}" font-size="${size}" font-weight="690" paint-order="stroke" stroke="${backdrop}" stroke-width="${size * .25}" stroke-linejoin="round" fill="#29352e">${titles.map((title, index) => `<tspan x="${position.x}" dy="${index ? '1.08em' : '0'}">${str(title)}</tspan>`).join('')}</text>
-      ${showArea ? `<text x="${position.x}" y="${baseline + size * 1.08 * titles.length}" font-size="${size * .81}" fill="#425448" paint-order="stroke" stroke="${backdrop}" stroke-width="${size * .24}" stroke-linejoin="round">${n(room.w * room.h, 1)} m²</text>` : ''}
+      <text x="${position.x}" y="${baseline}" font-size="${size}" font-weight="690" paint-order="stroke" stroke="${backdrop}" stroke-width="${size * .25}" stroke-linejoin="round" fill="${titleColor}">${titles.map((title, index) => `<tspan x="${position.x}" dy="${index ? '1.08em' : '0'}">${str(title)}</tspan>`).join('')}</text>
+      ${showArea ? `<text x="${position.x}" y="${baseline + size * 1.08 * titles.length}" font-size="${size * .81}" fill="${areaColor}" paint-order="stroke" stroke="${backdrop}" stroke-width="${size * .24}" stroke-linejoin="round">${n(room.w * room.h, 1)} m²</text>` : ''}
     </g>`;
   }
   function itemShape(item, active = false, preview = false, walls = level().walls) {
     const data = elements[item.type];
     if (!data) return '';
     const { x, y, width: w, depth: h, angle } = item;
-    const fill = data.color;
-    const stroke = active ? '#a6462c' : '#555b4e';
-    const rect = (px, py, width, height, color = 'none', radius = 0) => `<rect x="${px}" y="${py}" width="${width}" height="${height}" rx="${radius}" fill="${color}" stroke="${stroke}" stroke-width=".023"/>`;
+    const technical = technicalDrawing();
+    const fill = technical ? '#536f82' : data.color;
+    const stroke = active ? draftingInk.accent : technical ? '#586e7f' : '#555b4e';
+    const furnitureColor = (color) => technical && color[0] === '#' ? `${color}65` : color;
+    const rect = (px, py, width, height, color = 'none', radius = 0) => `<rect x="${px}" y="${py}" width="${width}" height="${height}" rx="${radius}" fill="${furnitureColor(color)}" stroke="${stroke}" stroke-width=".023"/>`;
     const line = (d, color = stroke, width = 0.022, dash = '') => `<path d="${d}" fill="none" stroke="${color}" stroke-width="${width}" ${dash ? `stroke-dasharray="${dash}"` : ''}/>`;
     let shape = '';
     if (data.opening) {
-      const wall = findWall(item, walls, 0.14)?.wall;
-      const opening = Math.max(h, wall?.thickness ?? 0.15) + 0.024;
-      const isWindow = item.type === 'window' || item.type === 'slidingWindow';
-      shape = rect(-w / 2, -opening / 2, w, opening, isWindow ? '#b9d8d4' : '#fbf7eb');
-      if (isWindow) shape += line(`M${-w / 2} 0H${w / 2}`, '#34716e', 0.034);
-      else {
-        const swing = item.type === 'doubleDoor' ? w / 2 : w;
-        shape += line(`M${-w / 2} 0V${-swing}`, '#996a4b', 0.046) + line(`M${-w / 2} ${-swing}a${swing} ${swing} 0 0 1 ${swing} ${swing}`, '#996a4b', 0.023, '.065 .06');
-        if (item.type === 'doubleDoor') shape += line(`M${w / 2} 0V${-swing}M${w / 2} ${-swing}a${swing} ${swing} 0 0 0 ${-swing} ${swing}`, '#996a4b', 0.029, '.07 .045');
-      }
+      const wall = findWall(item, walls, 0.14, w)?.wall;
+      shape = openingSymbol(item, wall?.thickness ?? .15, { active, technical });
     } else if (item.type === 'sofa') {
       shape = rect(-w / 2, -h / 2, w, h, '#a4ad95', 0.12) + rect(-w * 0.41, -h * 0.25, w * 0.82, h * 0.66, '#bfcaaf', 0.05) + line(`M0 ${-h * 0.25}V${h * 0.4}`);
     } else if (item.type === 'table') {
@@ -675,6 +756,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
 
   function measurementShape(measure, active = false, offsets = false, unit = .022) {
+    if (technicalDrawing()) return dimensionLine(measure, unit, n, { automatic: offsets, active });
     const { x1, y1, x2, y2 } = measure;
     const length = Math.hypot(x2 - x1, y2 - y1);
     if (length < 0.04) return '';
@@ -703,7 +785,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       measurementShape({ x1: x, y1: y - gap, x2: x + width, y2: y - gap }, false, true, unit) +
       measurementShape({ x1: x - gap, y1: y, x2: x - gap, y2: y + height }, false, true, unit);
   }
-  function wallShape(wall, active = false, forExport = false) {
+  function wallShape(wall, active = false, forExport = false, unit = .022) {
+    if (technicalDrawing()) return technicalWall(wall, { active, forExport, layers: settings.wallLayers, unit });
     const coordinates = `x1="${wall.x1}" y1="${wall.y1}" x2="${wall.x2}" y2="${wall.y2}"`;
     return `<g class="cv-plan-wall${active ? ' cv-plan-wall-active' : ''}" data-shape="walls" data-id="${wall.id}">
       ${forExport ? '' : `<line ${coordinates} stroke="transparent" stroke-width="12" vector-effect="non-scaling-stroke" pointer-events="stroke"/>`}
@@ -711,10 +794,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     </g>`;
   }
   function annotationShape(item, active) {
-    return `<g data-shape="annotations" data-id="${item.id}" fill="${active ? '#a6462c' : '#424539'}">${item.north ? `<path d="M${item.x} ${item.y - .43}l.17 .46-.17-.13-.17 .13Z"/>` : ''}<text x="${item.x}" y="${item.y}" font-size=".22" font-weight="600" stroke="#faf8f2" stroke-width=".047" paint-order="stroke">${str(item.text)}</text></g>`;
+    const color = active ? draftingInk.accent : technicalDrawing() ? draftingInk.text : '#424539';
+    return `<g data-shape="annotations" data-id="${item.id}" fill="${color}">${item.north ? `<path d="M${item.x} ${item.y - .43}l.17 .46-.17-.13-.17 .13Z"/>` : ''}<text x="${item.x}" y="${item.y}" font-size=".22" font-weight="600" stroke="${technicalDrawing() ? draftingInk.halo : '#faf8f2'}" stroke-width=".047" paint-order="stroke">${str(item.text)}</text></g>`;
   }
 
-  function draftLayer(forExport = false, unit = .022) {
+  function draftLayer(forExport = false, unit = .022, compact = false) {
     const current = level();
     const activeShape = (kind, id) => !forExport && selected?.kind === kind && selected.id === id;
     const moving = !forExport && drag?.type === 'shape' && drag.moved ? drag : null;
@@ -725,16 +809,26 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const visibleRooms = current.rooms.map((room) => moved('rooms', room));
     const visibleWalls = current.walls.map((wall) => moved('walls', wall));
     const visibleItems = current.items.filter((item) => settings.furniture || elements[item.type].opening).map((item) => moved('items', item));
+    const technical = technicalDrawing();
+    const lowerLevel = !forExport && settings.lowerLevel ? project.levels[project.levels.indexOf(current) - 1] : null;
+    const reference = lowerFloorReference(lowerLevel, unit);
     const outline = settings.dimensions && (visibleRooms.length || visibleWalls.length) ?
-      guides(levelBounds({ ...current, rooms: visibleRooms, walls: visibleWalls, items: [], measurements: [] }), unit) : '';
+      technical ? overallPlanDimensions(visibleWalls, visibleRooms, unit, n) :
+        guides(levelBounds({ ...current, rooms: visibleRooms, walls: visibleWalls, items: [], measurements: [] }), unit) : '';
     const obstacles = settings.labels ? visibleItems.filter((item) => !elements[item.type].opening).slice(0, 200).map(furnitureOutline) : [];
+    const limit = settings.openingTags && (settings.dimensions || compact) ? draftingBounds(visibleWalls, visibleRooms) : null;
+    const tags = settings.openingTags ? openingTags(visibleItems, visibleRooms, unit, n, isPt, { compact, limit }) : null;
+    if (tags) obstacles.push(...tags.obstacles);
     const rooms = visibleRooms.map((room) => roomShape(room, activeShape('rooms', room.id))).join('');
-    const walls = visibleWalls.map((wall) => wallShape(wall, activeShape('walls', wall.id), forExport)).join('');
+    const walls = visibleWalls.map((wall) => wallShape(wall, activeShape('walls', wall.id), forExport, unit)).join('');
     const items = visibleItems.map((item) => itemShape(item, activeShape('items', item.id), false, visibleWalls)).join('');
     const captions = settings.labels ? visibleRooms.map((room) => roomCaption(room, obstacles, unit)).join('') : '';
     const measures = current.measurements.map((measure) => measurementShape(moved('measurements', measure), activeShape('measurements', measure.id), false, unit)).join('');
+    const inside = settings.roomDimensions ? interiorPlanDimensions(visibleRooms, visibleWalls, unit, n) : '';
+    const activeWall = technical && !forExport && selected?.kind === 'walls' ? visibleWalls.find((wall) => selected.id === wall.id) : null;
+    const activeDimension = activeWall ? selectedWallDimension(activeWall, unit, n) : '';
     const annotations = (current.annotations ?? []).map((item) => annotationShape(moved('annotations', item), activeShape('annotations', item.id))).join('');
-    return `${background}${rooms}${outline}${walls}${items}${captions}${measures}${annotations}`;
+    return `${technical ? planPatterns() : ''}${background}${rooms}${reference}${outline}${walls}${items}${captions}${tags?.markup ?? ''}${inside}${measures}${annotations}${activeDimension}`;
   }
 
   function roomHandles(room) {
@@ -810,6 +904,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const rect = plane.getBoundingClientRect();
     const { width, height } = fitExtent(rect);
     const unit = width / Math.max(rect.width, 1);
+    const technical = technicalDrawing();
+    plane.dataset.drafting = settings.drawingStyle;
     if (viewport) {
       const left = camera.x - width / 2;
       const top = camera.y - height / 2;
@@ -817,12 +913,12 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       const step = gridStep();
       const subdivisions = step / unit >= 6.5;
       const gridSize = unit > .085 ? 5 : 1;
-      const gridKey = settings.grid ? [left, top, width, height, step, subdivisions, gridSize].join(':') : '';
+      const gridKey = settings.grid ? [left, top, width, height, step, subdivisions, gridSize, technical].join(':') : '';
       if (gridKey !== paintedGrid) {
         paintedGrid = gridKey;
         planGrid.innerHTML = !settings.grid ? '' : `<defs>
-          ${subdivisions ? `<pattern id="cv-plan-fine" patternUnits="userSpaceOnUse" x="${-step / 2}" y="${-step / 2}" width="${step}" height="${step}"><circle cx="${step / 2}" cy="${step / 2}" r="${unit * .75}" fill="#c8d1c6"/></pattern>` : ''}
-          <pattern id="cv-plan-reference-grid" patternUnits="userSpaceOnUse" width="${gridSize}" height="${gridSize}"><path d="M${gridSize} 0H0V${gridSize}" fill="none" stroke="#ccd6cc" stroke-width="${unit * .95}" /></pattern>
+          ${subdivisions ? `<pattern id="cv-plan-fine" patternUnits="userSpaceOnUse" x="${-step / 2}" y="${-step / 2}" width="${step}" height="${step}"><circle cx="${step / 2}" cy="${step / 2}" r="${unit * (technical ? .55 : .75)}" fill="${technical ? '#a9bfcc' : '#c8d1c6'}"/></pattern>` : ''}
+          <pattern id="cv-plan-reference-grid" patternUnits="userSpaceOnUse" width="${gridSize}" height="${gridSize}"><path d="M${gridSize} 0H0V${gridSize}" fill="none" stroke="${technical ? '#b9ccd6' : '#ccd6cc'}" stroke-width="${unit * .95}" /></pattern>
         </defs>
         ${subdivisions ? `<rect x="${left}" y="${top}" width="${width}" height="${height}" fill="url(#cv-plan-fine)"/>` : ''}
         <rect x="${left}" y="${top}" width="${width}" height="${height}" fill="url(#cv-plan-reference-grid)"/>`;
@@ -838,7 +934,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       ruler.textContent = `${n(rulerMeters)} m`;
     }
     if (scene) {
-      planScene.innerHTML = draftLayer(false, unit);
+      planScene.innerHTML = draftLayer(false, unit, rect.width < 535);
       const current = level();
       root.querySelector('[data-role="empty"]').hidden = tool !== 'select' || !!(current.rooms.length || current.walls.length || current.items.length || current.image || current.annotations?.length);
     }
@@ -893,12 +989,13 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       }
       if (selected.kind === 'walls') {
         title = isPt ? 'Parede' : 'Wall';
-        detail = `<div class="cv-row">${numberField('shape:length', 'length', wallLength(record), 'm', 0.1)}${numberField('shape:thickness', 'thickness', record.thickness, 'm', 0.05, 1.5)}</div>`;
+        detail = wallDetail(record);
       }
       if (selected.kind === 'items') {
         title = localized(elements[record.type]);
         allowRotation = true;
         detail = `<div class="cv-row">${numberField('shape:width', 'width', record.width, 'm', 0.1, 20)}${numberField('shape:depth', 'depth', record.depth, 'm', 0.05, 20)}</div>${numberField('shape:angle', 'angle', record.angle, '°', -360, 360, '1')}`;
+        if (elements[record.type].opening) detail += renderOpeningFields(record, locale);
       }
       if (selected.kind === 'measurements') {
         title = tr('measure');
@@ -954,7 +1051,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   function renderInspector(force = false) {
     if (!force && studioPanel.contains(document.activeElement) && document.activeElement?.matches('input, textarea')) return;
     const tabs = ['properties', 'costs', 'data', 'notes'];
+    const previousBody = studioPanel.querySelector('.cv-panel-body');
+    const scroll = studioPanel.dataset.tab === inspectorTab ? previousBody?.scrollTop : 0;
+    studioPanel.dataset.tab = inspectorTab;
     studioPanel.innerHTML = `<div class="cv-panel-tabs" role="group" aria-label="${tr('info')}">${tabs.map((id) => `<button type="button" data-action="tab:${id}" aria-pressed="${id === inspectorTab}">${tr(id)}</button>`).join('')}${toolbarButton('close-inspector', 'close', 'cancel')}</div><div class="cv-panel-body">${inspectorTab === 'properties' ? propertiesPanel() : notebookPanel()}</div>`;
+    if (scroll) studioPanel.querySelector('.cv-panel-body').scrollTop = scroll;
   }
 
   function openModal(kind, data = {}) {
@@ -1001,10 +1102,22 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (!results) return;
     const simplify = (value) => value.toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu, '');
     const terms = simplify(dialog.querySelector('[data-role=command-search]').value).split(/\s+/).filter(Boolean);
-    const matches = commands.filter(([action, , key]) => terms.every((word) => simplify(`${tr(key)} ${action}`).includes(word)));
-    results.innerHTML = matches.length ? matches.map(([action, glyph, key]) => action.startsWith('/')
+    const matches = (text) => {
+      const normalized = simplify(text);
+      return terms.every((word) => normalized.includes(word));
+    };
+    const actions = commands.filter(([action, , key]) => matches(`${tr(key)} ${action}`));
+    const found = terms.length ? project.levels.flatMap((floor) => {
+      const openings = openingsIndex(floor.items, isPt);
+      const rooms = floor.rooms.map(({ id, type, name }) => ({ id, title: name || localized(roomStyles[type]), kind: 'rooms', glyph: 'room' }));
+      const items = floor.items.map(({ id, type }) => ({ id, title: [openings.get(id), localized(elements[type])].filter(Boolean).join(' · '), kind: 'items', glyph: elements[type]?.opening ? type === 'door' || type === 'doubleDoor' ? 'door' : 'window' : 'furnish' }));
+      return [...rooms, ...items].filter(({ title }) => matches(`${title} ${floor.name}`)).map((entry) => ({ ...entry, floor }));
+    }).slice(0, 32) : [];
+    const elementsHtml = found.map(({ id, title, kind, glyph, floor }) => `<button type="button" class="cv-tool cv-command-entity" data-action="find-entity" data-command="true" data-id="${str(id)}" data-floor="${str(floor.id)}" data-kind="${kind}">${icon(glyph, 16)}<span>${str(title)}</span><small>${str(floor.name)}</small></button>`).join('');
+    const toolsHtml = actions.map(([action, glyph, key]) => action.startsWith('/')
       ? `<a class="cv-tool" href="${action}">${icon(glyph)}<span>${tr(key)}</span></a>`
-      : toolbarButton(action, glyph, key, 'data-command="true"', true)).join('') : `<p>${tr('commandEmpty')}</p>`;
+      : toolbarButton(action, glyph, key, 'data-command="true"', true)).join('');
+    results.innerHTML = [elementsHtml && `<h3>${tr('commandEntities')}</h3>${elementsHtml}`, toolsHtml && `<h3>${tr('commandTools')}</h3>${toolsHtml}`].filter(Boolean).join('') || `<p>${tr('commandEmpty')}</p>`;
   }
   function drawModal() {
     let content = '';
@@ -1027,7 +1140,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       title = tr(item ? 'levelConfiguration' : 'addLevel');
       content = `<form class="cv-form" data-form="level"><label class="cv-field">${tr('levelName')}<input name="name" maxlength="95" required value="${str(item?.name ?? `${tr('level')} ${project.levels.length}`)}"></label><label class="cv-field">${tr('levelHeight')} (m)<input name="height" type="number" min="1.5" max="12" step=".01" required value="${item?.height ?? profile().defaults?.roomHeight ?? 2.7}"></label><button class="cv-button cv-primary" type="submit">${tr('save')}</button></form>`;
     } else if (modal === 'settings') {
-      content = `<div class="cv-switches">${Object.entries(settings).map(([key, value]) => `<label><span>${tr(key)}</span><input type="checkbox" data-field="settings:${key}" ${value ? 'checked' : ''}></label>`).join('')}</div><label class="cv-field">${tr('language')}<select data-field="locale"><option value="pt-PT" ${isPt ? 'selected' : ''}>Português (Portugal)</option><option value="en-PT" ${locale === 'en-PT' ? 'selected' : ''}>English (Portugal)</option><option value="en-INT" ${locale === 'en-INT' ? 'selected' : ''}>English (International)</option></select></label>`;
+      content = `<label class="cv-field">${tr('drawingStyle')}<select data-field="settings:drawingStyle">${['technical', 'furnished'].map((style) => `<option value="${style}" ${settings.drawingStyle === style ? 'selected' : ''}>${tr(style)}</option>`).join('')}</select></label><div class="cv-switches">${Object.entries(settings).filter(([, value]) => typeof value === 'boolean').map(([key, value]) => `<label><span>${tr(key)}</span><input type="checkbox" data-field="settings:${key}" ${value ? 'checked' : ''}></label>`).join('')}</div><label class="cv-field">${tr('language')}<select data-field="locale"><option value="pt-PT" ${isPt ? 'selected' : ''}>Português (Portugal)</option><option value="en-PT" ${locale === 'en-PT' ? 'selected' : ''}>English (Portugal)</option><option value="en-INT" ${locale === 'en-INT' ? 'selected' : ''}>English (International)</option></select></label>`;
     } else if (modal === 'help') {
       content = `<div class="cv-help"><h3>${tr('keyboard')}</h3>${infoRows([[tr('select'), 'V'], [tr('pan'), 'H'], [tr('wall'), 'W'], [tr('room'), 'R'], [tr('measure'), 'M'], [tr('undo'), 'Ctrl / ⌘ + Z'], [tr('redo'), 'Ctrl / ⌘ + Shift + Z'], [tr('save'), 'Ctrl / ⌘ + S'], [tr('commands'), 'Ctrl / ⌘ + K'], [tr('cancel'), 'Esc'], [tr('delete'), 'Delete']])}<a class="cv-button" href="/guias">${isPt ? 'Guias de construção' : 'Construction guides'} ${icon('external', 16)}</a> <a class="cv-button" href="/calculadoras">${isPt ? 'Calculadoras' : 'Calculators'} ${icon('external', 16)}</a></div>`;
     } else if (modal === 'confirm') {
@@ -1083,7 +1196,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       id = 'room';
     }
     tool = id;
-    if (viewMode === 'view3d' && id !== 'select') viewMode = 'plan';
+    if (viewMode === 'view3d' && id !== 'select') viewMode = 'split';
     if (['item', 'door', 'window'].includes(id)) inspectorTab = 'properties';
     render();
   }
@@ -1134,7 +1247,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     for (const entry of state.levels) {
       for (const room of entry.rooms) room.x = x(room.x + room.w);
       for (const item of entry.items) { item.x = x(item.x); item.angle = 180 - item.angle; }
-      for (const wall of [...entry.walls, ...entry.measurements]) { wall.x1 = x(wall.x1); wall.x2 = x(wall.x2); }
+      for (const wall of [...entry.walls, ...entry.measurements]) {
+        wall.x1 = x(wall.x1); wall.x2 = x(wall.x2);
+        if (wall.spec) wall.spec.exteriorSide *= -1;
+      }
       for (const annotation of entry.annotations ?? []) annotation.x = x(annotation.x);
       if (entry.image) entry.image.x = x(entry.image.x + entry.image.width);
     }
@@ -1354,7 +1470,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     }
     if (tool === 'wall' || tool === 'angled') {
       const thickness = wallThickness();
-      change(() => { current.walls.push(makeWall(start.x, start.y, end.x, end.y, thickness)); pendingPoint = end; });
+      const created = makeWall(start.x, start.y, end.x, end.y, thickness);
+      const spec = drawingWallSpec();
+      if (spec) created.spec = spec;
+      change(() => { current.walls.push(created); pendingPoint = end; });
     }
   }
 
@@ -1588,11 +1707,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
   function exportSvg() {
     const b = levelBounds(level());
-    return `<svg xmlns="http://www.w3.org/2000/svg" font-family="Arial,sans-serif" viewBox="${b.x - 1.15} ${b.y - 1.15} ${b.width + 2.3} ${b.height + 2.3}" width="1600" height="1200"><title>${str(project.name)} · ${str(level().name)}</title><rect x="${b.x - 1.15}" y="${b.y - 1.15}" width="${b.width + 2.3}" height="${b.height + 2.3}" fill="#faf8f2"/>${draftLayer(true)}</svg>`;
+    const margin = technicalDrawing() ? 1.6 : 1.15;
+    const box = { x: b.x - margin, y: b.y - margin, w: b.width + 2 * margin, h: b.height + 2 * margin };
+    const paper = technicalDrawing() ? draftingInk.halo : '#faf8f2';
+    return `<svg xmlns="http://www.w3.org/2000/svg" font-family="Arial,sans-serif" viewBox="${box.x} ${box.y} ${box.w} ${box.h}" width="1600" height="1200"><title>${str(project.name)} · ${str(level().name)}</title><rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="${paper}"/>${draftLayer(true)}</svg>`;
   }
   function exportPng() {
     if (viewMode !== 'plan') {
-      const scene = compileScene(modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, site: true }));
+      const scene = compileScene(modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, simulator }));
       if (scene.empty) { toast('exportError'); return; }
       modelImage(scene, viewer.camera()).toBlob((blob) => blob ? download(blob, 'png', 'image/png') : toast('exportError'));
       return;
@@ -1673,11 +1795,29 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       }
       case 'category':
         category = arg;
+        toolbarOpen = true;
         setTool('select');
         if (arg === 'furniture') { inspectorOpen = true; inspectorTab = 'properties'; render(); }
         if (arg === 'visualise' && viewMode === 'plan') { viewMode = 'split'; render(); }
         break;
       case 'tool': setTool(arg); break;
+      case 'find-entity': {
+        const { floor, kind, id } = button.dataset;
+        const target = viewLevel(project, floor);
+        if (!target?.[kind]?.some((entry) => entry.id === id)) break;
+        if (viewMode === 'view3d') viewMode = 'split';
+        switchLevel(floor);
+        selected = { kind, id };
+        inspectorOpen = true;
+        setActiveShape();
+        fitSelection();
+        break;
+      }
+      case 'toggle-tools': toolbarOpen = !toolbarOpen; updateTools(); break;
+      case 'simulator':
+        setSimulatorOpen(simulatorPanel.hidden);
+        if (simulatorPanel.hidden) simulatorToggle.focus({ preventScroll: true });
+        break;
       case 'snap-plan':
         settings.snap = !settings.snap;
         updateTools();
@@ -1720,7 +1860,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         break;
       case 'tab': inspectorTab = arg; inspectorOpen = true; updateTools(); renderInspector(); break;
       case 'inspector': inspectorOpen = !inspectorOpen; updateTools(); break;
-      case 'close-inspector': inspectorOpen = false; updateTools(); break;
+      case 'close-inspector': inspectorOpen = false; updateTools(); inspectorToggle.focus({ preventScroll: true }); break;
       case 'level': switchLevel(arg); dialog.close(); break;
       case 'add-level':
         if (project.levels.length >= 20) { toast('levelLimit'); break; }
@@ -1826,6 +1966,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         cutaway = entry.cutaway;
         showRoof = entry.roof;
         modelScope = entry.scope;
+        if (entry.environment) {
+          simulator = { ...entry.environment };
+          syncSimulatorControls(simulatorPanel, locale, simulator);
+        }
         if (viewMode === 'plan') viewMode = 'view3d';
         switchLevel(entry.levelId);
         render();
@@ -1837,12 +1981,75 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }, listen);
 
   function gridStep() { return profile().defaults?.gridStep ?? .1; }
+  function wallDetail(wall) {
+    return renderWallInspector(wall, level(), { locale, systemId: project.systemId, findWall });
+  }
+  function updateWallDetails(wall) {
+    syncWallInspector(studioPanel, wallDetail(wall));
+    updateTools();
+    paint();
+  }
+  function wallSpecChange(key, input) {
+    const wall = selected?.kind === 'walls' && entity();
+    if (!wall) return;
+    const current = level();
+    const spec = getWallSpec(wall, current.height);
+    let candidate = spec;
+    if (key === 'assembly') candidate = applyWallAssembly(spec, input.value);
+    else if (key === 'heightMode') {
+      const height = input.value === 'fixed' ? effectiveWallHeight(wall, current.height) : spec.height;
+      candidate = { ...spec, heightMode: input.value, height };
+    } else if (key === 'exteriorSide') candidate = { ...spec, exteriorSide: input.checked ? -1 : 1 };
+    else if (input.type !== 'number') candidate = { ...spec, [key]: input.value };
+    else if (Number.isFinite(input.valueAsNumber)) {
+      const value = clamp(input.valueAsNumber, Number(input.min), Number(input.max));
+      candidate = { ...spec, [key]: ['core', 'insulation', 'outside', 'inside'].includes(key) ? value / 1000 : value };
+    }
+    const safe = normalizeWallSpec(candidate, wall.thickness);
+    if (safe.heightMode === 'floor') safe.baseOffset = Math.min(safe.baseOffset, Number((current.height - .05).toFixed(3)));
+    if (Object.keys(spec).some((field) => spec[field] !== safe[field])) {
+      change(() => { wall.spec = safe; wall.thickness = wallSpecThickness(safe); }, false);
+    }
+    updateWallDetails(wall);
+  }
   function shapeChange(key, input) {
     const item = entity();
     if (!item) return;
     const number = input.type === 'number' ? input.valueAsNumber : Number.NaN;
+    if (selected.kind === 'items' && elements[item.type].opening && ['openingHeight', 'openingSill'].includes(key)) {
+      const opening = normalizeOpening(item.opening ?? {}, item.type);
+      const field = key === 'openingHeight' ? 'height' : 'sill';
+      if (Number.isFinite(number)) {
+        const edited = normalizeOpening({ ...opening, [field]: number }, item.type);
+        if (opening[field] !== edited[field]) change(() => { item.opening = edited; });
+      }
+      input.value = normalizeOpening(item.opening ?? {}, item.type)[field];
+      return;
+    }
     if (input.type === 'number' && !Number.isFinite(number)) { input.value = item[key] ?? wallLength(item); return; }
     const value = Number.isFinite(number) ? clamp(number, Number(input.min), Number(input.max)) : input.value.trim();
+    if (selected.kind === 'walls' && key === 'length') {
+      const length = wallLength(item);
+      if (Math.abs(value - length) < .0005) return;
+      const factor = value / Math.max(.01, length);
+      const next = { ...item, x2: item.x1 + (item.x2 - item.x1) * factor, y2: item.y1 + (item.y2 - item.y1) * factor };
+      change(() => {
+        applyGeometry(connectedGeometry(new Map([[item.id, next]])));
+        delete item.roomId;
+      }, false);
+      updateWallDetails(item);
+      return;
+    }
+    if (selected.kind === 'items' && elements[item.type].opening && key === 'width') {
+      const attached = findWall(item, level().walls, .15, item.width);
+      if (attached) {
+        const width = Math.min(value, wallLength(attached.wall));
+        const checked = findWall(item, [attached.wall], Infinity, width);
+        if (width !== item.width) change(() => { Object.assign(item, { width, x: checked.x, y: checked.y }); });
+        input.value = Number(width.toFixed(3));
+        return;
+      }
+    }
     if (item[key] === value) return;
     change(() => {
       if (key === 'length') {
@@ -1862,6 +2069,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (area) area.textContent = `${n(item.w * item.h)} m²`;
     }
   }
+  simulatorPanel.addEventListener('input', (event) => {
+    if (!event.target.matches('[data-simulator]')) return;
+    const next = readSimulatorOption(simulator, event.target);
+    if (next === simulator) return;
+    simulator = next;
+    syncSimulatorControls(simulatorPanel, locale, simulator);
+    modelPaint();
+  }, listen);
   root.addEventListener('change', async (event) => {
     const input = event.target;
     if (input.matches('[data-role="file"]')) {
@@ -1905,7 +2120,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     }
     const [key, property] = (input.dataset.field ?? '').split(':');
     if (key === 'shape') { shapeChange(property, input); return; }
-    if (key === 'settings' && Object.hasOwn(settings, property)) { settings[property] = input.checked; updateTools(); paint(); return; }
+    if (key === 'wall') { wallSpecChange(property, input); return; }
+    if (key === 'settings' && Object.hasOwn(settings, property)) {
+      if (property === 'drawingStyle' && ['technical', 'furnished'].includes(input.value)) settings.drawingStyle = input.value;
+      else if (input.type === 'checkbox') settings[property] = input.checked;
+      updateTools();
+      paint();
+      return;
+    }
     switch (key) {
       case 'modelScope':
         modelScope = input.value;
@@ -1921,6 +2143,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       case 'systemId':
         if (systemIds.includes(input.value) && project.systemId !== input.value) {
           newWallThickness = null;
+          newWallAssembly = 'custom';
           change(() => { project.systemId = input.value; });
         }
         break;
@@ -1933,8 +2156,16 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
           paintPlan(false);
         }
         break;
+      case 'newWallAssembly':
+        if (!Object.hasOwn(wallAssemblies, input.value)) break;
+        newWallAssembly = input.value;
+        renderPlanOptions();
+        root.querySelector('[data-field="newWallAssembly"]')?.focus({ preventScroll: true });
+        paintPlan(false);
+        break;
       case 'newWallThickness':
-        newWallThickness = Number.isFinite(input.valueAsNumber) ? clamp(input.valueAsNumber, .08, 1) : null;
+        if (newWallAssembly !== 'custom') break;
+        newWallThickness = Number.isFinite(input.valueAsNumber) ? Number(clamp(input.valueAsNumber, .08, 1).toFixed(3)) : null;
         input.value = wallThickness();
         paintPlan(false);
         break;
@@ -1973,11 +2204,15 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     else if (event.target.matches('[type="search"]')) drawProjectList();
   }, listen);
   dialog.addEventListener('keydown', (event) => {
-    if (modal === 'commands' && event.target.matches('[data-role=command-search]')) {
-      const item = dialog.querySelector('[data-role=command-list] > button, [data-role=command-list] > a');
-      if (event.key === 'Enter' && item) { event.preventDefault(); item.click(); }
-      if (event.key === 'ArrowDown' && item) { event.preventDefault(); item.focus(); }
-    }
+    if (modal !== 'commands') return;
+    const search = dialog.querySelector('[data-role=command-search]');
+    const entries = [...dialog.querySelectorAll('[data-role=command-list] > :is(button, a)')];
+    if (event.key === 'Enter' && event.target === search && entries.length) { event.preventDefault(); entries[0].click(); }
+    if (!['ArrowUp', 'ArrowDown'].includes(event.key)) return;
+    const active = entries.indexOf(event.target);
+    const target = event.key === 'ArrowUp' ? entries[active - 1] ?? search : entries[active + 1] ?? search;
+    event.preventDefault();
+    target.focus();
   }, listen);
   dialog.addEventListener('close', () => {
     if (!dialog.open && fromFocus?.isConnected) fromFocus.focus({ preventScroll: true });
@@ -2035,7 +2270,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (!name) return;
       const { azimuth, ...viewpoint } = viewer.camera();
       change(() => { (project.cameras ??= []).push({ id: uid(), name, levelId: project.levelId, orbit: azimuth,
-        cutaway, roof: showRoof, scope: modelScope, ...viewpoint }); });
+        cutaway, roof: showRoof, scope: modelScope, environment: { ...simulator }, ...viewpoint }); });
       dialog.close();
     }
     if (kind === 'label') {
@@ -2065,18 +2300,36 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       return;
     }
     if (editing || event.altKey) return;
+    if (!chord && ['pageup', 'pagedown'].includes(key)) {
+      const index = project.levels.findIndex(({ id }) => id === project.levelId);
+      const target = project.levels[index + (key === 'pageup' ? 1 : -1)];
+      if (target) { event.preventDefault(); switchLevel(target.id); }
+      return;
+    }
     if (chord && (key === 'z' || key === 'y')) {
       event.preventDefault();
       undo(event.shiftKey || key === 'y');
     } else if (key === 'escape' || key === 'enter' && pendingPoint) {
-      if (pendingPoint) finishDrawing();
+      if (key === 'escape' && !simulatorPanel.hidden) { setSimulatorOpen(false); simulatorToggle.focus({ preventScroll: true }); }
+      else if (pendingPoint) finishDrawing();
       else setTool('select');
     } else if (key === 'delete' || key === 'backspace') {
       if (removeEntity()) event.preventDefault();
     } else if (!chord) {
-      const shortcut = { v: 'select', h: 'pan', w: 'wall', r: 'room', m: 'measure', t: 'label' }[key];
+      if (Object.hasOwn(modeKeys, key)) {
+        event.preventDefault(); viewMode = modeKeys[key]; render(); return;
+      }
+      if (key === 'f') {
+        event.preventDefault();
+        if (viewMode === 'view3d') viewer.fit();
+        else { resetCamera(); paintPlan(); }
+        return;
+      }
+      const shortcut = Object.keys(shortcuts).find((id) => shortcuts[id].toLowerCase() === key);
       if (shortcut) {
+        event.preventDefault();
         category = ['measure', 'label'].includes(shortcut) ? 'annotate' : 'structure';
+        toolbarOpen = true;
         setTool(shortcut);
       }
     }

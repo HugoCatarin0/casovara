@@ -178,8 +178,8 @@ void main() {
 
 function createGPU() {
   const canvas = document.createElement('canvas');
-  const gl = canvas.getContext('webgl', { alpha: true, antialias: true, depth: true, premultipliedAlpha: true });
-  if (!gl) return null;
+  const gl = canvas.getContext('webgl', { alpha: true, antialias: true, depth: true, stencil: true, premultipliedAlpha: true });
+  if (!gl?.getContextAttributes()?.stencil) return null;
   const program = gl.createProgram();
   for (const [type, code] of [[gl.VERTEX_SHADER, vertexShader], [gl.FRAGMENT_SHADER, fragmentShader]]) {
     const shader = gl.createShader(type);
@@ -238,7 +238,7 @@ function createGPU() {
     gl.uniform1f(uniforms.depthScale, .68 / frame.radius);
     gl.uniform1f(uniforms.perspective, frame.perspective);
 
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT | gl.STENCIL_BUFFER_BIT);
     const opaque = scene.opaque.length * 3;
     const translucent = scene.translucent.length * 3;
     gl.drawArrays(gl.TRIANGLES, 0, opaque);
@@ -249,9 +249,14 @@ function createGPU() {
       gl.colorMask(true, true, true, true);
       gl.depthFunc(gl.EQUAL);
       gl.depthMask(false);
+      gl.enable(gl.STENCIL_TEST);
+      gl.stencilFunc(gl.EQUAL, 0, 0xff);
+      // Coplanar shadow fragments can overlap. Composite one visible fragment per sample.
+      gl.stencilOp(gl.KEEP, gl.KEEP, gl.INCR);
       gl.enable(gl.BLEND);
       gl.drawArrays(gl.TRIANGLES, opaque, translucent);
       gl.disable(gl.BLEND);
+      gl.disable(gl.STENCIL_TEST);
       gl.depthMask(true);
       gl.depthFunc(gl.LESS);
     }
