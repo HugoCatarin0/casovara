@@ -110,6 +110,28 @@ test('Service tool generates chosen schemes on specified floors and adjusts rout
   assert.throws(() => tool([{ op: 'generate', systems: ['plumbing'] }], { ...adjusted.project, levels: [adjusted.project.levels[0]] }), /kept|preserv|match|generated/i);
 });
 
+test('Agents can choose the radiant pipe pattern and distribution wall for a single storey', () => {
+  const { project } = create({ levels: [
+    { id: 'ground', name: 'Rés do chão', autoOpenings: false, rooms: [{ type: 'living', x: 0, y: 0, width: 6, depth: 4 }] },
+    { id: 'upper', name: 'Piso 1', autoOpenings: false, rooms: [{ type: 'bedroom', x: 0, y: 0, width: 4, depth: 3 }] },
+  ] });
+  const wall = project.levels[0].walls.find(({ y1, y2 }) => y1 === 0 && y2 === 0);
+  const manifoldWall = { wallId: wall.id, fraction: .4, side: wall.x2 > wall.x1 ? 1 : -1 };
+  const generate = { op: 'generate', systems: ['radiantFloor'], levelIds: ['ground'], radiantPattern: 'serpentine', manifoldWall };
+  const tool = (operation, current = project) => runDesignTool('casovara_design_services', { project: current, operations: [operation] });
+
+  assert.throws(() => tool({ ...generate, radiantPattern: 'radial' }), /radiantPattern/);
+  assert.throws(() => tool({ ...generate, levelIds: ['ground', 'upper'] }), /one storey/);
+  const staged = tool(generate);
+  const scheme = staged.analysis.levels[0].services.radiantFloor;
+  assert.equal(scheme.radiantPattern, 'serpentine');
+  assert.deepEqual(scheme.nodes.find(({ kind }) => kind === 'manifold').wall, manifoldWall);
+  assert.ok(scheme.runs.every(({ medium, pattern }) => medium !== 'loop' || pattern === 'serpentine'));
+  const repeated = tool({ op: 'generate', systems: ['radiantFloor'], levelIds: ['ground'], replace: true }, staged.project);
+  assert.equal(repeated.analysis.levels[0].services.radiantFloor.radiantPattern, 'serpentine');
+  assert.equal(staged.project.levels[1].services, undefined);
+});
+
 test('Agents can add grouped outlets to opposite wall faces and set the ground-floor supply phase', () => {
   const { project } = create({ levels: [
     { id: 'ground', name: 'Rés do chão', autoOpenings: false, rooms: [

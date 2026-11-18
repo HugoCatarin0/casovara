@@ -89,6 +89,7 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
   assert.match(preview.text, /ui\/notifications\/tool-result/);
   assert.match(preview.text, /service-palette[^>]*>\{"electrical"/);
   assert.match(preview.text, /new Option\(strings\(\)\.slab, 'slab'\)/);
+  assert.match(preview.text, /Espiral bifilar/);
   const { contents: [guide] } = await call('resources/read', { uri: 'casovara://skills/house-planning' });
   assert.match(guide.text, /casovara_create_plan/);
   assert.equal((await tool('casovara_get_planner_skill', {})).content[0].text, guide.text);
@@ -120,12 +121,18 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
   const revisedPlan = await tool(inspect.name, { project: edit.structuredContent.project });
   assert.deepEqual(revisedPlan.structuredContent.analysis.levels[0].slab, revisedSlab);
   const drawing = await tool('casovara_design_services', {
-    project, operations: [{ op: 'generate', systems: ['electrical', 'vmc'], phase: 'three' }],
+    project, operations: [{ op: 'generate', systems: ['electrical', 'vmc', 'radiantFloor'], phase: 'three', radiantPattern: 'serpentine' }],
   });
   const electrical = drawing.structuredContent.project.levels[0].services.electrical;
   assert.ok(electrical.runs.some(({ medium }) => medium === 'serviceFeed'));
   assert.equal(electrical.nodes.find(({ kind }) => kind === 'supplyEntry').phase, 'three');
   assert.ok(drawing.structuredContent.project.levels[0].services.vmc.nodes.length);
+  const radiant = drawing.structuredContent.analysis.levels[0].services.radiantFloor;
+  assert.equal(radiant.radiantPattern, 'serpentine');
+  assert.equal(radiant.nodes.find(({ kind }) => kind === 'manifold').mount, 'wall');
+  const supply = radiant.runs.find(({ medium }) => medium === 'supply');
+  const returning = radiant.runs.find(({ medium, port }) => medium === 'return' && port === supply.port);
+  assert.notDeepEqual(supply.start, returning.end);
   const socket = electrical.nodes.find(({ kind }) => kind === 'outlet');
   const revised = await tool('casovara_design_services', { project: drawing.structuredContent.project,
     operations: [{ op: 'edit', system: 'electrical', changes: [{ op: 'update_node', id: socket.id, node: { count: 5 } }] }],

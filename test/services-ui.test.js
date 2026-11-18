@@ -176,3 +176,33 @@ test('The main service phase and alternate mounting surfaces are available to th
   click(editor, 2, 2);
   assert.equal(floor.services.plumbing.nodes[0].mount, 'floor');
 });
+
+test('Radiant generation offers a bifilar spiral and retains an explicitly positioned serpentine cabinet', () => {
+  const floor = { ...emptyFloor('ground'),
+    rooms: [{ id: 'living', type: 'living', x: 0, y: 0, w: 4, h: 3 }],
+    walls: [{ id: 'distribution', x1: 0, y1: 0, x2: 4, y2: 0, thickness: .18 }],
+  };
+  const { editor, confirmations } = createEditor([floor]);
+  editor.reveal('radiantFloor');
+  assert.match(editor.panel(), /<option value="spiral" selected>Espiral bifilar/);
+  choose(editor, 'radiant-pattern', 'serpentine');
+  choose(editor, 'generation-wall', 'distribution');
+  choose(editor, 'generation-fraction', '35');
+  assert.match(editor.panel(), /Parede de distribuição/);
+  editor.modeAction('generate');
+  const generated = floor.services.radiantFloor;
+  assert.deepEqual(generated.nodes.find(({ kind }) => kind === 'manifold').wall, { wallId: 'distribution', fraction: .35, side: 1 });
+  const loop = generated.runs.find(({ medium }) => medium === 'loop');
+  assert.equal(loop.pattern, 'serpentine');
+  assert.match(editor.panel(), /<option value="serpentine" selected>Serpentina/);
+  const svg = renderServicesPlan(floor, { layers: editor.layers, locale: 'pt-PT' });
+  assert.match(svg, /data-radiant-pattern="serpentine"/);
+  assert.match(svg, /data-radiant-port="1"/);
+  editor.inspectRun(loop.id);
+  assert.match(editor.panel(), /Disposição dos tubos · Serpentina/);
+
+  editor.modeAction('generate');
+  assert.equal(confirmations.length, 1);
+  confirmations[0]();
+  assert.deepEqual(floor.services.radiantFloor, generated);
+});

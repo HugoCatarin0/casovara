@@ -1,4 +1,5 @@
 import { elements } from './object-catalog.js';
+import { radiantLayout, radiantLeadFootprints } from './radiant-layout.js';
 import {
   createServiceSurfaceRouter, isServiceExteriorNode, serviceRouteSurfaces, serviceRunSurface,
   serviceSurfaceFootprints, supportedRouteSpans,
@@ -79,7 +80,7 @@ export const serviceSystems = Object.freeze({
     ['return', 'Retorno do circuito', 'Loop return', '#3d72a7'],
     ['loop', 'Circuito no pavimento', 'Floor loop', '#d4751d'],
   ], [
-    ['manifold', 'Coletor de piso radiante', 'Radiant floor manifold', 'CP', 'wall', ['supply', 'return']],
+    ['manifold', 'Caixa de coletores do piso radiante', 'Radiant floor manifold cabinet', 'CP', 'wall', ['supply', 'return']],
     ['zone', 'Extremo do circuito', 'Loop end', 'Z', 'floor'],
     ['junction', 'Derivação', 'Junction', 'J', 'floor'],
   ]),
@@ -87,6 +88,7 @@ export const serviceSystems = Object.freeze({
 
 export const serviceMounts = Object.freeze(['wall', 'floor', 'ceiling', 'free']);
 export const servicePhases = Object.freeze(['single', 'three']);
+export const radiantPatterns = Object.freeze(['spiral', 'serpentine']);
 export const serviceLimits = Object.freeze({
   coordinate: 600, label: 95, count: 99, nodes: 300, runs: 500, points: 80, operations: 100,
 });
@@ -107,6 +109,7 @@ const validAnchor = (wall) => validId(wall?.wallId) && Number.isFinite(wall.frac
   wall.fraction >= 0 && wall.fraction <= 1 && validWallSide(wall.side);
 const fractional = (fraction) => Number(fraction.toFixed(6));
 const exteriorKinds = new Set(['supplyEntry', 'waterEntry', 'outsideAir', 'exhaustOutlet']);
+const validPort = (port) => Number.isInteger(port) && port >= 1 && port <= serviceLimits.nodes;
 
 function checkSystem(systemId) {
   if (!Object.hasOwn(serviceSystems, systemId)) throw new Error('Unknown building service system.');
@@ -149,6 +152,9 @@ function tidyRun(input, system, nodes) {
   const label = text(input.label);
   return { id: input.id, medium: input.medium, from: input.from, to: input.to, points: (input.points ?? []).map(position),
     ...(serviceRouteSurfaces.includes(input.surface) ? { surface: input.surface } : {}),
+    ...(input.medium === 'loop' && radiantPatterns.includes(input.pattern) ? { pattern: input.pattern } : {}),
+    ...(validPort(input.port) && ((input.medium === 'supply' && nodes.get(input.from).kind === 'manifold') ||
+      (input.medium === 'return' && nodes.get(input.to).kind === 'manifold')) ? { port: input.port } : {}),
     ...(label ? { label } : {}),
   };
 }
@@ -174,10 +180,48 @@ export function normalizeBuildingServices(input, level) {
     .map(([id, system]) => [id, normalizeNetwork(input[id], system, level)]));
 }
 
+const radiantCabinetWidth = (count) => Math.min(.94, Math.max(.46, .18 + count * .085));
+
+function spacedPorts(manifold, numbers) {
+  const width = radiantCabinetWidth(numbers.length);
+  const spacing = numbers.length ? (width - .16) / (numbers.length * 2) : 0;
+  const angle = Number.isFinite(manifold.angle) ? manifold.angle * Math.PI / 180 : -Math.PI / 2;
+  const pointAt = (offset) => position({ x: manifold.x - Math.sin(angle) * offset, y: manifold.y + Math.cos(angle) * offset });
+  const ports = numbers.map((port, index) => {
+    const supplyOffset = spacing * (index * 2 - numbers.length + .5);
+    const returnOffset = supplyOffset + spacing;
+    return { port, supplyOffset, returnOffset, supply: pointAt(supplyOffset), return: pointAt(returnOffset) };
+  });
+  return { width, ports };
+}
+
+export function radiantCabinetPorts(network, manifold, level) {
+  const numbers = new Set();
+  for (const run of listOf(network?.runs)) {
+    if (validPort(run?.port) && ((run.medium === 'supply' && run.from === manifold.id) ||
+      (run.medium === 'return' && run.to === manifold.id))) numbers.add(run.port);
+  }
+  return spacedPorts(resolveServiceNode(level, manifold), [...numbers].sort((a, b) => a - b));
+}
+
 export function serviceRunPoints(network, run, level) {
   const from = network.nodes.find(({ id }) => id === run.from);
   const to = network.nodes.find(({ id }) => id === run.to);
-  return from && to ? [position(resolveServiceNode(level, from)), ...(run.points ?? []), position(resolveServiceNode(level, to))] : [];
+  if (!from || !to) return [];
+  const endpoint = (node) => {
+    if (node.kind === 'manifold' && validPort(run.port)) {
+      const port = radiantCabinetPorts(network, node, level).ports.find(({ port }) => port === run.port);
+      if (port?.[run.medium]) return port[run.medium];
+    }
+    return position(resolveServiceNode(level, node));
+  };
+  return [endpoint(from), ...(run.points ?? []), endpoint(to)];
+}
+
+export function radiantNetworkPattern(network) {
+  const loops = listOf(network?.runs).filter((run) => run?.medium === 'loop');
+  const pattern = loops[0]?.pattern;
+  return radiantPatterns.includes(pattern) && loops.every((run) => run.pattern === pattern) ? pattern : undefined;
 }
 
 function orthogonal(from, to, offset = 0) {
@@ -382,31 +426,29 @@ function serviceBuilder(level, systemId, system) {
   const safe = (point) => position({ x: clamp(point.x), y: clamp(point.y) });
   return {
     network: graph,
-    add(kind, p, { count, phase, threshold = Infinity, onSlab = null } = {}) {
+    add(kind, p, { count, phase, threshold = Infinity, placement } = {}) {
       const defaultMount = system.kinds[kind].defaultMount;
-      const target = defaultMount === 'wall' && snapToWall(snapping, p, {
+      const anchor = placement ?? (defaultMount === 'wall' && snapToWall(snapping, p, {
         roomId: p.roomId, exterior: exteriorKinds.has(kind), threshold, occupied: graph.nodes,
-      });
-      const anchor = target && (!onSlab || onSlab.some((area) => target.x >= area.x && target.x <= area.x + area.width &&
-        target.y >= area.y && target.y <= area.y + area.depth)) ? target : null;
+      }));
       const node = {
         id: 'n' + (graph.nodes.length + 1), kind, ...safe(p), roomId: p.roomId,
-        mount: onSlab ? 'floor' : defaultMount === 'wall' ? 'free' : defaultMount, ...anchor, count, phase,
+        mount: defaultMount === 'wall' ? 'free' : defaultMount, ...anchor, count, phase,
       };
       graph.nodes.push(node);
       return node;
     },
-    link(medium, from, to, points = orthogonal(from, to)) {
+    link(medium, from, to, points = orthogonal(from, to), { pattern, port, origin = from, destination = to } = {}) {
       let bends = points.map(safe);
       if (medium !== 'loop') {
         const surface = serviceRunSurface(systemId, { medium });
         if (!routers.has(surface)) routers.set(surface, createServiceSurfaceRouter(serviceSurfaceFootprints(level, surface)));
-        const path = routers.get(surface)([from, ...bends, to], {
+        const path = routers.get(surface)([origin, ...bends, destination], {
           exteriorFrom: isServiceExteriorNode(from), exteriorTo: isServiceExteriorNode(to),
         });
         if (path.length <= serviceLimits.points + 2) bends = path.slice(1, -1).map(safe);
       }
-      graph.runs.push({ id: 'r' + (graph.runs.length + 1), medium, from: from.id, to: to.id, points: bends });
+      graph.runs.push({ id: 'r' + (graph.runs.length + 1), medium, from: from.id, to: to.id, points: bends, pattern, port });
     },
   };
 }
@@ -547,53 +589,138 @@ function airConditioning(level, rooms, { add, link }) {
 
 const canHeat = (room) => (isHabitable(room) || isWet(room)) && room.w >= 1.2 && room.h >= 1.2;
 
-function radiantFloor(level, rooms, { add, link }) {
+function radiantCabinetLocation(level, slabs, circuits, requested, retained) {
+  const { hosts, rooms, openings } = prepareWallSnapping(level);
+  const width = radiantCabinetWidth(circuits.length);
+  const centres = circuits.map((room) => at(room));
+  const centre = {
+    x: centres.reduce((total, point) => total + point.x, 0) / centres.length,
+    y: centres.reduce((total, point) => total + point.y, 0) / centres.length,
+  };
+  const candidates = [];
+  for (const host of hosts) {
+    if (requested && host.wall.id !== requested.wallId) continue;
+    const half = (width / 2 + .025) / host.length;
+    if (half >= .5) continue;
+    const blocked = (openings.get(host.wall.id) ?? []).map(([start, end]) => [start - half, end + half]);
+    for (const side of [-1, 1]) {
+      if (requested && requested.side !== side) continue;
+      const edges = [facePoint(host, 0, side), facePoint(host, 1, side)];
+      const slabsOnFace = supportedRouteSpans(edges, slabs).filter(({ supported }) => supported);
+      for (const { from, to } of slabsOnFace) {
+        const limits = [Math.max(0, fractionAt(host, from)) + half, Math.min(1, fractionAt(host, to)) - half];
+        if (limits[0] > limits[1]) continue;
+        for (const [start, end] of subtractRanges([limits], blocked)) {
+          const preference = requested ?? retained;
+          const preferred = preference?.wallId === host.wall.id && preference.side === side &&
+            preference.fraction >= start - .000001 && preference.fraction <= end + .000001;
+          if (requested && !preferred) continue;
+          const fraction = preferred ? within(preference.fraction, start, end) : within(fractionAt(host, centre), start, end);
+          const placement = wallPlacement(host, fraction, side, rooms);
+          const room = rooms.find(({ id }) => id === placement.roomId);
+          if (!room) continue;
+          const opposite = facePoint(host, fraction, -side);
+          const interior = rooms.some((candidate) => contains(candidate, opposite, .025));
+          const travel = centres.reduce((sum, point) => sum + distance(point, placement), 0) / centres.length;
+          candidates.push({ placement, score: travel + (interior ? 0 : 2) - (room.type === 'circulation' ? .45 : 0), preferred });
+        }
+      }
+    }
+  }
+  const best = candidates.sort((a, b) => Number(b.preferred) - Number(a.preferred) || a.score - b.score)[0];
+  if (requested && !best) throw new Error('The radiant floor manifold cabinet needs a clear wall face next to the slab.');
+  return best?.placement;
+}
+
+function nearZoneEdge(zone, start, end) {
+  const options = [
+    [start.x + end.x - 2 * zone.x, (point) => ({ x: zone.x + .025, y: point.y })],
+    [2 * (zone.x + zone.w) - start.x - end.x, (point) => ({ x: zone.x + zone.w - .025, y: point.y })],
+    [start.y + end.y - 2 * zone.y, (point) => ({ x: point.x, y: zone.y + .025 })],
+    [2 * (zone.y + zone.h) - start.y - end.y, (point) => ({ x: point.x, y: zone.y + zone.h - .025 })],
+  ];
+  return options.sort(([a], [b]) => a - b)[0][1];
+}
+
+function radiantLeads(slabs, circuits, angle) {
+  const footways = radiantLeadFootprints(slabs, circuits);
+  const clearRoute = createServiceSurfaceRouter(footways);
+  const supportedRoute = createServiceSurfaceRouter(slabs);
+  const supported = (path) => supportedRouteSpans(path, footways).every((span) => span.supported);
+  const normal = Number.isFinite(angle) ? angle * Math.PI / 180 : null;
+
+  return (port, entry, offset, lean) => {
+    const beforeBend = (length) => normal === null ? port : {
+      x: port.x + Math.cos(normal) * length, y: port.y + Math.sin(normal) * length,
+    };
+    const departure = [lean, .075, .035, 0].map(beforeBend).find((point) => supported([port, point])) ?? port;
+    const approach = [port, departure, ...orthogonal(departure, entry, offset), entry];
+    const clear = clearRoute(approach);
+    const path = clear.length <= serviceLimits.points + 1 && supported(clear) ? clear : supportedRoute(approach);
+    const compact = path.length <= serviceLimits.points + 1 ? path : approach;
+    return compact.slice(1).filter((point, index) => distance(point, compact[index]) >= .001);
+  };
+}
+
+function radiantFloor(level, rooms, { add, link }, { radiantPattern, manifoldWall }) {
   const heated = rooms.filter(canHeat);
   const slabs = slabFootprints(level);
-  const coveredArea = (room, minimum) => slabs.flatMap((slab) => {
+  const zones = heated.flatMap((room) => slabs.flatMap((slab) => {
     const x = Math.max(room.x, slab.x), y = Math.max(room.y, slab.y);
     const w = Math.min(room.x + room.w, slab.x + slab.width) - x;
     const h = Math.min(room.y + room.h, slab.y + slab.depth) - y;
-    return w >= minimum && h >= minimum ? [{ ...room, x, y, w, h }] : [];
-  });
-  const zones = heated.flatMap((room) => coveredArea(room, 1.2));
+    return w >= 1.2 && h >= 1.2 ? [{ ...room, x, y, w, h }] : [];
+  }));
   if (!zones.length) return;
-  const passage = rooms.filter(({ type }) => type === 'circulation').flatMap((room) => coveredArea(room, .35))[0] ?? zones[0];
-  const manifold = add('manifold', identify(passage, at(passage, .15, .20)), { onSlab: slabs });
-  for (const room of zones) {
+  const rectangles = zones.flatMap((room) => {
     const xCount = room.w >= 6 ? 2 : 1;
     const yCount = room.h >= 6 ? 2 : 1;
+    const w = room.w / xCount, h = room.h / yCount;
+    const parts = [];
     for (let ix = 0; ix < xCount; ix++) {
       for (let iy = 0; iy < yCount; iy++) {
-        const w = room.w / xCount, h = room.h / yCount;
-        const x = room.x + w * ix;
-        const y = room.y + h * iy;
-        const margin = .23;
-        const rowCount = Math.max(4, Math.min(12, Math.ceil((h - margin * 2) / .48)));
-        const path = [];
-        for (let row = 0; row < rowCount; row++) {
-          const a = { x: x + margin, y: y + margin + row * (h - margin * 2) / (rowCount - 1) };
-          const b = { x: x + w - margin, y: a.y };
-          path.push(...(row % 2 ? [b, a] : [a, b]));
-        }
-        const start = add('zone', identify(room, path[0]));
-        const end = add('zone', identify(room, path.at(-1)));
-        link('supply', manifold, start, orthogonal(manifold, start, -.06));
-        link('loop', start, end, path.slice(1, -1));
-        link('return', end, manifold, orthogonal(end, manifold, .06));
+        parts.push({ ...room, x: room.x + w * ix, y: room.y + h * iy, w, h });
       }
     }
+    return parts;
+  });
+  const previous = listOf(level.services?.radiantFloor?.nodes).find((node) => node?.kind === 'manifold' && validAnchor(node.wall));
+  const placement = radiantCabinetLocation(level, slabs, rectangles, manifoldWall, previous?.wall);
+  const first = zones[0];
+  const manifold = add('manifold', identify(first, { x: first.x + first.w / 2, y: first.y + .08 }),
+    { placement: placement ?? { mount: 'floor' } });
+  const bankAngle = Number.isFinite(manifold.angle) ? manifold.angle * Math.PI / 180 : -Math.PI / 2;
+  const lateral = (room) => -Math.sin(bankAngle) * (room.x + room.w / 2 - manifold.x) +
+    Math.cos(bankAngle) * (room.y + room.h / 2 - manifold.y);
+  const circuits = rectangles.sort((a, b) => lateral(a) - lateral(b))
+    .map((room) => ({ room, path: radiantLayout(room, { pattern: radiantPattern, near: manifold }) }))
+    .filter(({ path }) => path.length >= 2 && path.length <= serviceLimits.points + 2);
+  const { ports } = spacedPorts(manifold, circuits.map((_, index) => index + 1));
+  const leadBends = radiantLeads(slabs, circuits, manifold.angle);
+  for (const [index, { room, path }] of circuits.entries()) {
+    const { port, supply, return: returnPort } = ports[index];
+    if (distance(supply, path.at(-1)) + distance(returnPort, path[0]) < distance(supply, path[0]) + distance(returnPort, path.at(-1))) path.reverse();
+    const start = add('zone', identify(room, path[0]));
+    const end = add('zone', identify(room, path.at(-1)));
+    const approach = nearZoneEdge(room, start, end);
+    const entry = approach(start), exit = approach(end);
+    const departure = .105 + Math.min(index, 8) * .012;
+    link('supply', manifold, start, leadBends(supply, entry, -.055, departure), { port, origin: supply });
+    link('loop', start, end, path.slice(1, -1), { pattern: radiantPattern });
+    link('return', end, manifold, leadBends(returnPort, exit, .055, departure + .008).reverse(), { port, destination: returnPort });
   }
 }
 
 const generators = { electrical, plumbing, vmc, airConditioning, radiantFloor };
 
-export function generateServices(level, systemId, { includeEntry = true, phase = 'single' } = {}) {
+export function generateServices(level, systemId, { includeEntry = true, phase = 'single', radiantPattern, manifoldWall } = {}) {
   const system = checkSystem(systemId);
-  if (typeof includeEntry !== 'boolean' || !servicePhases.includes(phase)) throw new Error('Invalid installation generation options.');
+  const pattern = radiantPattern ?? radiantNetworkPattern(level?.services?.radiantFloor) ?? 'spiral';
+  if (typeof includeEntry !== 'boolean' || !servicePhases.includes(phase) || !radiantPatterns.includes(pattern) ||
+    (manifoldWall != null && !validAnchor(manifoldWall))) throw new Error('Invalid installation generation options.');
   const rooms = roomsOf(level);
   const build = serviceBuilder(level, systemId, system);
-  if (rooms.length) generators[systemId](level, rooms, build, { includeEntry, phase });
+  if (rooms.length) generators[systemId](level, rooms, build, { includeEntry, phase, radiantPattern: pattern, manifoldWall });
   if (build.network.nodes.length > serviceLimits.nodes || build.network.runs.length > serviceLimits.runs) {
     throw new Error('This installation proposal is too large. Generate on a smaller storey or draw part of the network manually.');
   }
@@ -683,7 +810,12 @@ export function applyServiceOperations(level, systemId, operations) {
       case 'update_run': {
         if (!runs.has(edit.id) || !record(edit.run)) throw new Error('Unknown installation run.');
         if (edit.run.surface != null && !serviceRouteSurfaces.includes(edit.run.surface)) throw new Error('Invalid installation route surface.');
-        const run = tidyRun({ ...runs.get(edit.id), ...edit.run, id: edit.id }, system, nodes);
+        const previousRun = runs.get(edit.id);
+        const editedPoints = edit.run.points;
+        const changedPath = ['from', 'to'].some((key) => edit.run[key] !== undefined && edit.run[key] !== previousRun[key]) ||
+          (Array.isArray(editedPoints) && (editedPoints.length !== previousRun.points.length ||
+            editedPoints.some((point, index) => point?.x !== previousRun.points[index].x || point?.y !== previousRun.points[index].y)));
+        const run = tidyRun({ ...previousRun, ...(changedPath ? { pattern: undefined } : {}), ...edit.run, id: edit.id }, system, nodes);
         if (!run) throw new Error('Invalid installation run or incompatible endpoint.');
         runs.set(edit.id, run);
         break;
@@ -698,7 +830,13 @@ export function applyServiceOperations(level, systemId, operations) {
       case 'generate': {
         if (edit.replace !== true && (nodes.size || runs.size)) throw new Error('An installation already exists. Confirm replacement to generate again.');
         const existingPhase = systemId === 'electrical' ? [...nodes.values()].find(({ kind }) => kind === 'supplyEntry')?.phase : undefined;
-        const fresh = generateServices(level, systemId, { includeEntry: edit.includeEntry, phase: edit.phase === undefined ? existingPhase : edit.phase });
+        const source = systemId === 'radiantFloor' ? { ...level, services: { ...level.services, radiantFloor: {
+          nodes: [...nodes.values()], runs: [...runs.values()],
+        } } } : level;
+        const fresh = generateServices(source, systemId, {
+          includeEntry: edit.includeEntry, phase: edit.phase === undefined ? existingPhase : edit.phase,
+          radiantPattern: edit.radiantPattern, manifoldWall: edit.manifoldWall,
+        });
         // If the current layout has no eligible rooms, retain the existing drawing.
         if (!fresh.nodes.length) break;
         nodes.clear();
@@ -723,8 +861,15 @@ const missingEquipment = {
   plumbing: ['coldManifold', 'Falta um coletor de água fria no traçado.', 'The layout has no cold-water manifold.'],
   vmc: ['unit', 'Falta uma unidade VMC no traçado.', 'The layout has no mechanical ventilation unit.'],
   airConditioning: ['outdoorUnit', 'Falta uma unidade exterior no traçado.', 'The layout has no outdoor unit.'],
-  radiantFloor: ['manifold', 'Falta um coletor de piso radiante no traçado.', 'The layout has no radiant floor manifold.'],
+  radiantFloor: ['manifold', 'Falta uma caixa de coletores do piso radiante no traçado.', 'The layout has no radiant floor manifold cabinet.'],
 };
+
+const segmentsOf = (path) => path.slice(1).map((point, index) => [path[index], point]);
+const orient = (a, b, point) => (b.x - a.x) * (point.y - a.y) - (b.y - a.y) * (point.x - a.x);
+function crossesCoil(route, coils) {
+  return segmentsOf(route).some(([a, b]) => coils.some(([c, d]) =>
+    orient(a, b, c) * orient(a, b, d) < -1e-9 && orient(c, d, a) * orient(c, d, b) < -1e-9));
+}
 
 export function inspectServices(level, systemId, { includeEntry = true } = {}) {
   const system = checkSystem(systemId);
@@ -737,10 +882,16 @@ export function inspectServices(level, systemId, { includeEntry = true } = {}) {
   const runs = [];
   const attached = new Set();
   const warnings = [];
+  const radiantPattern = systemId === 'radiantFloor' ? radiantNetworkPattern(network) : undefined;
+  const coils = systemId === 'radiantFloor' && network.runs.some((run) => validPort(run.port))
+    ? network.runs.filter(({ medium }) => medium === 'loop')
+      .flatMap((run) => segmentsOf([nodes.get(run.from), ...run.points, nodes.get(run.to)]))
+    : [];
   for (const run of network.runs) {
     const from = nodes.get(run.from);
     const to = nodes.get(run.to);
-    const route = [from, ...run.points, to];
+    const routedToPort = validPort(run.port);
+    const route = routedToPort ? serviceRunPoints({ ...network, nodes: visibleNodes }, run, level) : [from, ...run.points, to];
     const surface = serviceRunSurface(systemId, run);
     if (!footprints.has(surface)) footprints.set(surface, serviceSurfaceFootprints(level, surface));
     const spans = supportedRouteSpans(route, footprints.get(surface), {
@@ -755,7 +906,11 @@ export function inspectServices(level, systemId, { includeEntry = true } = {}) {
     if (spans.some((span) => !span.supported && !span.exterior)) {
       warnings.push(warning('unsupported_surface', 'O traçado atravessa uma zona sem a superfície de instalação selecionada.', 'The run crosses an area without its selected installation surface.', { runId: run.id }));
     }
-    runs.push({ ...run, surface });
+    if (routedToPort && crossesCoil(route, coils)) {
+      warnings.push(warning('radiant_crossing', 'A ligação à caixa de coletores cruza uma zona de tubagem. Ajuste os pontos do percurso.',
+        'A lead to the manifold cabinet crosses a heating coil. Adjust the route waypoints.', { runId: run.id }));
+    }
+    runs.push({ ...run, surface, ...(routedToPort ? { start: route[0], end: route.at(-1) } : {}) });
   }
   if (!network.nodes.length) {
     warnings.push(roomsOf(level).length
@@ -783,8 +938,12 @@ export function inspectServices(level, systemId, { includeEntry = true } = {}) {
     } else if (node.wall && openings.get(node.wall.wallId)?.some(([start, end]) => node.wall.fraction > start + .000001 && node.wall.fraction < end - .000001)) {
       warnings.push(warning('wall_opening', 'O ponto sobrepõe-se a um vão. Ajuste a posição na parede.', 'The point overlaps an opening. Adjust its position on the wall.', { nodeId: node.id }));
     }
+    if (node.kind === 'manifold' && node.mount !== 'wall') {
+      warnings.push(warning('radiant_manifold_wall', 'Escolha uma parede junto à laje para a caixa de coletores.', 'Select a wall next to the slab for the manifold cabinet.', { nodeId: node.id }));
+    }
     if (node.roomId && !room) warnings.push(warning('missing_room', 'A divisão associada a este ponto já não existe.', 'The room associated with this point no longer exists.', { nodeId: node.id }));
     if (room && !contains(room, node, .09)) warnings.push(warning('outside_room', 'O ponto está fora da divisão associada.', 'The point is outside its associated room.', { nodeId: node.id }));
   }
-  return { nodes: visibleNodes, runs, lengths: Object.fromEntries(Object.entries(lengths).map(([key, length]) => [key, metres(length)])), warnings: warnings.slice(0, 100) };
+  return { nodes: visibleNodes, runs, ...(radiantPattern ? { radiantPattern } : {}),
+    lengths: Object.fromEntries(Object.entries(lengths).map(([key, length]) => [key, metres(length)])), warnings: warnings.slice(0, 100) };
 }

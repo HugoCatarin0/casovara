@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { elements, makeItem, makeLevel, makeProject, makeRoom, makeWall, modelFaces } from '../public/builder-engine.js';
-import { serviceSystems } from '../public/building-services.js';
+import { generateServices, serviceSystems } from '../public/building-services.js';
 import { cameraFrame, compileScene, pickScene, projectVertex, renderScene } from '../public/model-renderer.js';
 import { createModelViewer } from '../public/model-viewer.js';
 
@@ -422,6 +422,32 @@ test('3D outdoor units rest on terrain and buried leads are not shown crossing e
   assert.ok(leads.length);
   assert.ok(leads.flatMap(({ points }) => points).every(([x, , z]) => x >= -.001 && z >= 0 && z < .02));
   assert.ok(!model(false).some(({ owner }) => owner?.id === 'outdoor'));
+});
+
+test('The radiant cabinet contains both headers and wall-backed risers converge at separate ports', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const level = project.levels[0];
+  level.rooms.push(makeRoom('living', 0, 0, 5, 4));
+  level.walls.push(makeWall(0, 0, 5, 0, .2));
+  const network = generateServices(level, 'radiantFloor');
+  const manifold = network.nodes.find(({ kind }) => kind === 'manifold');
+  assert.equal(manifold.mount, 'wall');
+  level.services = { radiantFloor: network };
+  const faces = modelFaces(project, level.id, true, { services: ['radiantFloor'] });
+  const { supply, return: returning } = serviceSystems.radiantFloor.media;
+  const owned = faces.filter(({ owner }) => owner?.id === manifold.id);
+  assert.ok(owned.some(({ fill }) => fill === supply.color));
+  assert.ok(owned.some(({ fill }) => fill === returning.color));
+  assert.ok(owned.flatMap(({ points }) => points).every(([, y]) => Math.abs(y - .1) < .055));
+  const pair = [network.runs.find(({ medium }) => medium === 'supply'), network.runs.find(({ medium }) => medium === 'return')];
+  const risers = pair.map(({ id }) => faces.filter(({ owner, points }) => owner?.id === id &&
+    points.some(([, , height]) => height > .12)).flatMap(({ points }) => points));
+  for (const riser of risers) {
+    assert.ok(riser.length > 0);
+    assert.ok(riser.every(([, y]) => Math.abs(y - .1) < .015));
+  }
+  const center = (points) => (Math.min(...points.map(([x]) => x)) + Math.max(...points.map(([x]) => x))) / 2;
+  assert.ok(Math.abs(center(risers[0]) - center(risers[1])) > .01);
 });
 
 test('A custom slab extends past the rooms and removes flooring over uncovered areas', () => {

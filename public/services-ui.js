@@ -1,4 +1,4 @@
-import { applyServiceOperations, inspectServices, resolveServiceNode, serviceLimits, serviceMounts, serviceNodeSymbol, servicePhases, serviceRunPoints, serviceSystems, snapServiceNode } from './building-services.js';
+import { applyServiceOperations, inspectServices, radiantCabinetPorts, radiantNetworkPattern, radiantPatterns, resolveServiceNode, serviceLimits, serviceMounts, serviceNodeSymbol, servicePhases, serviceRunPoints, serviceSystems, snapServiceNode } from './building-services.js';
 import { roomStyles } from './builder-engine.js';
 import { isServiceExteriorNode, serviceRouteSurfaces, serviceRunSurface, serviceSurfaceFootprints, supportedRouteSpans } from './service-routing.js';
 
@@ -33,6 +33,13 @@ const copy = {
   wallMiss: ['Aproxima-te da face que queres usar ou escolhe outra montagem.', 'Move closer to the wall face you want or choose a different mounting.'],
   sockets: ['Número de tomadas', 'Number of outlets'], phase: ['Alimentação', 'Supply'], generationPhase: ['Alimentação da proposta', 'Proposed supply'],
   single: ['Monofásica', 'Single-phase'], three: ['Trifásica', 'Three-phase'],
+  radiantPattern: ['Disposição dos tubos', 'Pipe layout'], spiral: ['Espiral bifilar', 'Counterflow spiral'], serpentine: ['Serpentina', 'Serpentine'],
+  patternByStorey: ['Padrão de cada piso', 'Use each storey’s layout'],
+  radiantManifold: ['Os circuitos ligam-se à caixa de coletores por pares de ida e retorno.', 'Each circuit connects to the manifold cabinet through a supply and return pair.'],
+  distributionWall: ['Parede de distribuição', 'Distribution wall'], manifoldAuto: ['Escolha automática', 'Automatic placement'],
+  circuitCount: ['Circuitos ligados', 'Connected circuits'],
+  cabinetWallHint: ['Podes ajustar a parede, a face e a posição da caixa. Usa Refazer traçado para recalcular os percursos.', 'You can adjust the cabinet wall, face and position. Regenerate the layout to recalculate the routes.'],
+  radiantWallInvalid: ['Escolhe uma face com espaço para a caixa de coletores e com laje junto à parede.', 'Choose a wall face with room for the manifold cabinet and a nearby slab.'],
   selectHint: ['Seleciona um ponto ou uma ligação na planta. Arrasta pontos para os mover.', 'Select a point or connection in the plan. Drag points to move them.'],
   placeHint: ['Clica ou toca na planta para colocar o ponto.', 'Click or tap the plan to place the point.'],
   linkHint: ['Seleciona o ponto de origem na planta.', 'Select the starting point in the plan.'],
@@ -79,9 +86,26 @@ function nodeDescription(id, node, language) {
   ].filter(Boolean).join(' · ');
 }
 
-function nodeGraphic(id, node, unit, active, interactive) {
+function manifoldGraphic(node, cabinet, unit, interactive) {
+  if (!cabinet) return '';
+  const { width, ports } = cabinet;
+  const media = serviceSystems.radiantFloor.media;
+  const radius = Math.min(.024, Math.max(.012, unit * 1.8));
+  return `<g data-radiant-cabinet>
+    <rect transform="rotate(${node.angle})" x="-.06" y="${-width / 2}" width=".14" height="${width}" rx=".018" fill="#f0ece6" stroke="#734333" stroke-width="${unit * 1.15}" ${interactive ? 'pointer-events="all"' : ''}/>
+    ${ports.map(({ port, supply, return: returning }) => `<g data-radiant-port="${port}">
+      <circle cx="${supply.x - node.x}" cy="${supply.y - node.y}" r="${radius}" fill="${media.supply.color}"/>
+      <circle cx="${returning.x - node.x}" cy="${returning.y - node.y}" r="${radius}" fill="${media.return.color}"/>
+    </g>`).join('')}
+  </g>`;
+}
+
+function nodeGraphic(id, node, unit, active, interactive, cabinet) {
   const symbol = serviceNodeSymbol(id, node);
   const color = serviceSystems[id].color;
+  if (id === 'radiantFloor' && node.kind === 'zone' && !active) return `
+    <circle r="${unit * 2.7}" fill="${color}" stroke="#fffdf9" stroke-width="${unit}" pointer-events="none"/>
+    ${interactive ? `<circle r="${unit * 7}" fill="transparent" pointer-events="all"/>` : ''}`;
   const radius = unit * (active ? 10 : 8.5);
   const halfWidth = Math.max(radius, unit * (symbol.length * 2.9 + 3));
   const wallMounted = node.mount === 'wall' && Number.isFinite(node.angle);
@@ -93,7 +117,7 @@ function nodeGraphic(id, node, unit, active, interactive) {
   const outline = `fill="${active ? color : '#fffdf9'}" stroke="${color}" stroke-width="${unit * 1.7}"`;
   const stem = wallMounted ? `<path d="M0 0L${cx} ${cy}" stroke="#fffdf9" stroke-width="${unit * 4.5}" pointer-events="none"/><path d="M0 0L${cx} ${cy}" stroke="${color}" stroke-width="${unit * 1.8}" pointer-events="none"/><circle r="${unit * 2}" fill="${color}" pointer-events="none"/>` : '';
   return `${interactive && wallMounted ? `<path d="M0 0L${cx} ${cy}" stroke="transparent" stroke-width="${unit * 17}" pointer-events="stroke"/>` : ''}
-    ${stem}<g transform="translate(${cx} ${cy})" data-service-marker>
+    ${stem}${manifoldGraphic(node, cabinet, unit, interactive)}<g transform="translate(${cx} ${cy})" data-service-marker>
       ${interactive ? `<rect x="${-halfWidth - unit * 5}" y="${-unit * 15}" width="${(halfWidth + unit * 5) * 2}" height="${unit * 30}" fill="transparent" pointer-events="all"/>` : ''}
       <rect x="${-halfWidth}" y="${-radius}" width="${halfWidth * 2}" height="${radius * 2}" rx="${radius}" ${outline} pointer-events="none"/>
       <text y=".34em" fill="${active ? '#fff' : color}" font-size="${unit * 9.5}" font-weight="760" text-anchor="middle" pointer-events="none">${esc(symbol)}</text>
@@ -111,10 +135,13 @@ export function renderServicesPlan(level, { layers, unit = .019, locale, selecti
     const nodesById = new Map(network.nodes.map((node) => [node.id, node]));
     const selected = (kind, targetId) => selection?.system === id && selection.kind === kind && selection.id === targetId;
     const runs = network.runs.map((run) => {
-      const points = serviceRunPoints(network, run);
+      const points = serviceRunPoints(network, run, level);
       if (points.length < 2) return '';
       const medium = spec.media[run.medium];
       const active = selected('run', run.id);
+      const radiant = id === 'radiantFloor';
+      const lineWidth = unit * (radiant ? (active ? 2.7 : 1.7) : (active ? 4.2 : 2.55));
+      const haloWidth = unit * (radiant ? (active ? 4.1 : 2.6) : (active ? 7 : 5));
       const dash = mediumDashes[run.medium]?.map((length) => length * unit).join(' ');
       const surface = serviceRunSurface(id, run);
       if (!footprints.has(surface)) footprints.set(surface, serviceSurfaceFootprints(level, surface));
@@ -123,20 +150,26 @@ export function renderServicesPlan(level, { layers, unit = .019, locale, selecti
         exteriorTo: isServiceExteriorNode(nodesById.get(run.to)),
       });
       const unsupported = spans.filter((span) => !span.supported && !span.exterior);
-      const title = [run.label || medium[language], copy[surfaceLabel(surface)][language === 'pt' ? 0 : 1]].join(' · ');
+      const slot = language === 'pt' ? 0 : 1;
+      const pattern = radiantPatterns.includes(run.pattern) ? copy[run.pattern][slot] : null;
+      const title = [run.label || medium[language], pattern, copy[surfaceLabel(surface)][slot]].filter(Boolean).join(' · ');
       const vertices = linePoints(points);
       const supportedLine = unsupported.length
         ? `<path d="${routePath(spans.filter((span) => span.supported || span.exterior))}"`
         : `<polyline points="${vertices}"`;
-      return `<g data-service-system="${id}" data-service-kind="run" data-service-id="${esc(run.id)}" data-run-surface="${surface}"><title>${esc(title)}</title>
+      return `<g data-service-system="${id}" data-service-kind="run" data-service-id="${esc(run.id)}" data-run-surface="${surface}"${pattern ? ` data-radiant-pattern="${run.pattern}"` : ''}><title>${esc(title)}</title>
         ${interactive ? `<polyline points="${vertices}" stroke="transparent" stroke-width="${unit * 16}" pointer-events="stroke"/>` : ''}
-        <polyline points="${vertices}" stroke="#fffdf9" stroke-width="${unit * (active ? 7 : 5)}" pointer-events="none"/>
-        ${supportedLine} stroke="${medium.color}" stroke-width="${unit * (active ? 4.2 : 2.55)}" ${dash ? `stroke-dasharray="${dash}"` : ''} pointer-events="none"/>
-        ${unsupported.length ? `<path data-unsupported-route d="${routePath(unsupported)}" stroke="#925127" stroke-width="${unit * (active ? 4.2 : 2.55)}" stroke-dasharray="${unit * 3} ${unit * 5}" pointer-events="none"/>` : ''}
+        <polyline points="${vertices}" stroke="#fffdf9" stroke-width="${haloWidth}" pointer-events="none"/>
+        ${supportedLine} stroke="${medium.color}" stroke-width="${lineWidth}" ${dash ? `stroke-dasharray="${dash}"` : ''} pointer-events="none"/>
+        ${unsupported.length ? `<path data-unsupported-route d="${routePath(unsupported)}" stroke="#925127" stroke-width="${lineWidth}" stroke-dasharray="${unit * 3} ${unit * 5}" pointer-events="none"/>` : ''}
         ${active && interactive ? (run.points ?? []).map((point) => `<circle cx="${point.x}" cy="${point.y}" r="${unit * 3}" fill="#fff" stroke="${medium.color}" stroke-width="${unit * 1.6}"/>`).join('') : ''}</g>`;
     }).join('');
-    const nodes = network.nodes.map((node) => `<g transform="translate(${node.x} ${node.y})" data-service-system="${id}" data-service-kind="node" data-service-id="${esc(node.id)}"><title>${esc(nodeDescription(id, node, language))}</title>
-      ${nodeGraphic(id, node, unit, selected('node', node.id), interactive)}</g>`).join('');
+    const nodes = network.nodes.map((node) => {
+      const cabinet = id === 'radiantFloor' && node.kind === 'manifold' && node.mount === 'wall' && Number.isFinite(node.angle)
+        ? radiantCabinetPorts(network, node, level) : null;
+      return `<g transform="translate(${node.x} ${node.y})" data-service-system="${id}" data-service-kind="node" data-service-id="${esc(node.id)}"><title>${esc(nodeDescription(id, node, language))}</title>
+        ${nodeGraphic(id, node, unit, selected('node', node.id), interactive, cabinet)}</g>`;
+    }).join('');
     return `<g class="cv-services-overlay" data-plotted-service="${id}" fill="none" stroke-linecap="round" stroke-linejoin="round">${runs}${nodes}</g>`;
   }).join('');
 }
@@ -195,6 +228,8 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   let count = 1;
   let phase = 'single';
   let generationPhase;
+  let generationRadiantPattern;
+  let generationManifoldWall;
   let medium = 'lighting';
   let routeSurface = '';
   let mode = 'select';
@@ -262,24 +297,44 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   function entryPhase() {
     return generationPhase ?? supplyPhase(groundFloor()?.services?.electrical?.nodes.find((node) => node.kind === 'supplyEntry') ?? {});
   }
+  function radiantPatternField() {
+    const choices = radiantPatterns.map((pattern) => [pattern, t(pattern)]);
+    const automatic = scope === 'all' ? '' : radiantNetworkPattern(network('radiantFloor')) ?? 'spiral';
+    if (scope === 'all') choices.unshift(['', t('patternByStorey')]);
+    return choose('radiant-pattern', 'radiantPattern', choices, generationRadiantPattern ?? automatic);
+  }
+  function manifoldWall() {
+    const floor = getLevel();
+    if (scope !== 'current' || generationManifoldWall?.levelId !== floor.id) return undefined;
+    const { wallId, fraction, side } = generationManifoldWall;
+    if (!floor.walls.some(({ id }) => id === wallId)) return undefined;
+    return { wallId, fraction, side };
+  }
   function generate() {
     const floors = scope === 'all' ? getProject().levels : [getLevel()];
     const target = system;
-    const entry = entryPhase();
+    const options = target === 'electrical' ? { phase: entryPhase() } :
+      target === 'radiantFloor' ? { radiantPattern: generationRadiantPattern, manifoldWall: manifoldWall() } : {};
     const existing = floors.some((floor) => floor.services?.[target]?.nodes.length || floor.services?.[target]?.runs.length);
     function perform() {
       try {
         const updates = floors.map((floor) => ({
           floor, system: target,
-          next: applyServiceOperations(floor, target, [{ op: 'generate', replace: true, includeEntry: floor.id === groundFloor()?.id, ...(target === 'electrical' ? { phase: entry } : {}) }]),
+          next: applyServiceOperations(floor, target, [{
+            op: 'generate', replace: true, includeEntry: floor.id === groundFloor()?.id, ...options,
+          }]),
         }));
         visible.add(target);
         update(updates.filter(({ floor, next }) => JSON.stringify(floor.services?.[target] ?? empty) !== JSON.stringify(next)), () => {
           clear();
           if (target === 'electrical' && floors.some((floor) => floor.id === groundFloor()?.id)) generationPhase = undefined;
+          if (target === 'radiantFloor') generationRadiantPattern = generationManifoldWall = undefined;
           message = updates.some(({ next }) => next.nodes.length) ? t('ready') : t('noGeometry');
         });
-      } catch { message = t('invalid'); refresh(); }
+      } catch {
+        message = t(options.manifoldWall ? 'radiantWallInvalid' : 'invalid');
+        refresh();
+      }
     }
     if (existing) confirmReplace(perform);
     else perform();
@@ -298,10 +353,11 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   }
   function runTitle(run, current, spec = serviceSystems[system]) {
     const surface = t(surfaceLabel(serviceRunSurface(system, run)));
-    if (run.label) return `${run.label} · ${surface}`;
+    const pattern = radiantPatterns.includes(run.pattern) ? t(run.pattern) : null;
+    if (run.label) return [run.label, pattern, surface].filter(Boolean).join(' · ');
     const from = current.nodes.find((node) => node.id === run.from);
     const to = current.nodes.find((node) => node.id === run.to);
-    return [spec.media[run.medium][language], surface, from && spec.kinds[from.kind][language], to && spec.kinds[to.kind][language]].filter(Boolean).join(' · ');
+    return [spec.media[run.medium][language], pattern, surface, from && spec.kinds[from.kind][language], to && spec.kinds[to.kind][language]].filter(Boolean).join(' · ');
   }
   function button(action, key, icon, extra = '', pressed) {
     return `<button type="button" class="cv-button" data-action="service-action:${action}" ${pressed === undefined ? '' : `aria-pressed="${pressed}"`} ${extra}>${icon ? glyph(icon) : ''}<span>${t(key)}</span></button>`;
@@ -340,6 +396,19 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       return [String(value), `${heading} · ${name}`];
     });
   }
+  function distributionControls() {
+    const floor = getLevel();
+    if (scope !== 'current' || !floor.walls.length) return '';
+    const anchor = manifoldWall();
+    const wall = floor.walls.find(({ id }) => id === anchor?.wallId);
+    const walls = floor.walls.map(({ id, x1, x2, y1, y2 }, index) => [id, `${t('wall')} ${index + 1} · ${number.format(Math.hypot(x2 - x1, y2 - y1))} m`]);
+    return `<details class="cv-service-distribution"${anchor ? ' open' : ''}>
+      <summary>${t('distributionWall')}</summary>
+      <div>${choose('generation-wall', 'wall', [['', t('manifoldAuto')], ...walls], anchor?.wallId ?? '')}
+      ${wall ? `${choose('generation-face', 'face', wallFaceOptions(wall, anchor.fraction), String(anchor.side))}
+      <label class="cv-field">${t('wallPosition')}<input type="number" inputmode="decimal" data-service-field="generation-fraction" min="0" max="100" step="any" value="${Number((anchor.fraction * 100).toFixed(4))}"></label>` : ''}</div>
+    </details>`;
+  }
   function wallFields(location, draft) {
     const floor = getLevel();
     const walls = floor.walls ?? [];
@@ -359,11 +428,14 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     const type = draft.kind ?? item.kind;
     const mounting = draft.mount ?? item.mount ?? 'free';
     const location = resolveServiceNode(getLevel(), item);
+    const cabinet = system === 'radiantFloor' && item.kind === 'manifold' ? radiantCabinetPorts(network(), item, getLevel()) : null;
     return `${choose('detail-kind', 'type', kinds, type, 'kind')}
       ${choose('detail-mount', 'mount', mountOptions(), mounting, 'mount')}
       ${mounting === 'wall' ? wallFields(location, draft) : `<div class="cv-row">${numberField('x', 'x', draft.x ?? location.x)}${numberField('y', 'y', draft.y ?? location.y)}</div>`}
       ${hasOutlets(system, type) ? countField('', draft.count ?? item.count ?? 1) : ''}
-      ${hasPhase(system, type) ? phaseField('', draft.phase ?? supplyPhase(item)) : ''}`;
+      ${hasPhase(system, type) ? phaseField('', draft.phase ?? supplyPhase(item)) : ''}
+      ${cabinet?.ports.length ? `<p class="cv-service-hint">${t('circuitCount')} · ${cabinet.ports.length}</p>` : ''}
+      ${system === 'radiantFloor' && type === 'manifold' ? `<p class="cv-service-hint">${t('cabinetWallHint')}</p>` : ''}`;
   }
   function detail(current, spec) {
     const item = record();
@@ -378,6 +450,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       ${node ? nodeDetail(item, kinds) : `
         ${choose('detail-run-medium', 'medium', media, draft.medium ?? item.medium, 'medium')}
         ${surfaceField('', draft.medium ?? item.medium, draft.surface ?? item.surface ?? '')}
+        ${radiantPatterns.includes(item.pattern) ? `<p class="cv-service-hint">${t('radiantPattern')} · ${t(item.pattern)}</p>` : ''}
         <p class="cv-service-hint">${t('routeSupport')}</p>
         ${choose('', 'from', nodes, draft.from ?? item.from, 'from')}${choose('', 'to', nodes, draft.to ?? item.to, 'to')}
         <div class="cv-service-points"><h4>${t('bends')}</h4>
@@ -401,7 +474,9 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       <p class="cv-service-floor">${t('floor')} · ${esc(getLevel().name)}</p>
       ${choose('system', 'system', Object.entries(serviceSystems).map(([id, info]) => [id, info[language]]), system)}
       <div class="cv-service-generate"><div class="cv-service-generate-options">${choose('scope', 'scope', [['current', t('current')], ['all', t('all')]], scope)}
-        ${system === 'electrical' && (onGround || scope === 'all') ? phaseField('generation-phase', entryPhase()) : ''}</div>${button('generate', planned ? 'reset' : 'generate')}</div>
+        ${system === 'electrical' && (onGround || scope === 'all') ? phaseField('generation-phase', entryPhase()) : ''}
+        ${system === 'radiantFloor' ? radiantPatternField() : ''}</div>${button('generate', planned ? 'reset' : 'generate')}</div>
+      ${system === 'radiantFloor' ? `<p class="cv-service-hint">${t('radiantManifold')}</p>${distributionControls()}` : ''}
       <p class="cv-service-note">${t('schematic')}</p>
       <details class="cv-service-layers"><summary>${t('visible')}</summary><div>${ids.map((id) => `<label><input type="checkbox" data-service-field="visible" value="${id}"${visible.has(id) ? ' checked' : ''}><i style="--cv-network-color:${serviceSystems[id].color}"></i>${esc(serviceSystems[id][language])}</label>`).join('')}</div></details>
     </section>
@@ -478,6 +553,28 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       case 'count': count = clampCount(input.value); input.value = String(count); break;
       case 'phase': phase = input.value; break;
       case 'generation-phase': generationPhase = input.value; break;
+      case 'radiant-pattern':
+        generationRadiantPattern = radiantPatterns.includes(input.value) ? input.value : undefined;
+        break;
+      case 'generation-wall': {
+        const floor = getLevel();
+        const wall = floor.walls.find(({ id }) => id === input.value);
+        if (!wall) { generationManifoldWall = undefined; break; }
+        const anchor = { wallId: wall.id, fraction: .5, side: 1 };
+        if (!resolveServiceNode(floor, { mount: 'wall', wall: anchor }).roomId) anchor.side = -1;
+        generationManifoldWall = { ...anchor, levelId: floor.id };
+        break;
+      }
+      case 'generation-face': {
+        const side = Number(input.value);
+        if (manifoldWall() && (side === -1 || side === 1)) generationManifoldWall.side = side;
+        break;
+      }
+      case 'generation-fraction': {
+        const fraction = Number(input.value) / 100;
+        if (manifoldWall() && input.value !== '' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1) generationManifoldWall.fraction = fraction;
+        break;
+      }
       case 'detail-kind':
       case 'detail-mount':
       case 'detail-wall':
@@ -636,7 +733,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   return {
     clear, click, field, hint, inspectRun, locate, modeAction, moveNode, panel, preview, previewMove, remove, removeBend, select, selection, submit, updateWallFaces,
     reveal(id = system, { keepVisible = false } = {}) { setSystem(id, keepVisible); },
-    reset() { clear(); visible.clear(); pinned.clear(); generationPhase = undefined; routeSurface = ''; },
+    reset() { clear(); visible.clear(); pinned.clear(); generationPhase = generationRadiantPattern = generationManifoldWall = undefined; routeSurface = ''; },
     get mode() { return mode; },
     get layers() { return [...visible]; },
     get system() { return system; },

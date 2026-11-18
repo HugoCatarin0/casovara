@@ -40,7 +40,9 @@ O **Corte** revela os traçados no pavimento. Quando o teto está visível no mo
 | Águas e esgotos | Entrada de água fria, saída de esgotos, coletores, aparelhos sanitários e traçados independentes de água fria, água quente e esgotos. |
 | VMC | Unidade, condutas, insuflação, extração, admissão e rejeição. |
 | Ar condicionado | Unidades, ligações de refrigerante e drenagem de condensados. |
-| Piso radiante | Coletor, zonas, ida, retorno e circuitos de piso. Gere esta especialidade quando a escolher. |
+| Piso radiante | Caixa de coletores na parede, pares de ida e retorno e circuitos em espiral bifilar ou serpentina. |
+
+Em **Piso radiante**, a opção **Espiral bifilar** entrelaça a ida e o retorno de cada circuito. Pode escolher **Serpentina** como alternativa. Para definir a caixa antes de gerar um piso, abra **Parede de distribuição** e escolha a parede, a face e a posição. Nos projetos guardados, **Refazer traçado** permite mudar a disposição e reutilizar a posição válida da caixa.
 
 Os esquemas automáticos organizam a geometria por piso. A entrada elétrica, a entrada de água e a saída de esgotos são propostas no primeiro piso da lista. A entrada elétrica começa como monofásica e pode ser alterada. As ligações entre pisos, o dimensionamento e a conformidade técnica exigem um projeto de especialidades. [Instalações elétricas na DGEG](https://www.dgeg.gov.pt/pt/areas-setoriais/energia/energia-eletrica/instalacoes-eletricas-de-servico-particular/procedimentos-e-controlo-das-instalacoes/projeto/) · [Redes prediais de água e drenagem](https://diariodarepublica.pt/dr/detalhe/decreto-regulamentar/23-1995-431873) · [Sistema de Certificação Energética](https://www.dgeg.gov.pt/pt/areas-setoriais/energia/eficiencia-energetica/sistema-de-certificacao-energetica-dos-edificios/sce-sistema-de-certificacao-energetica-dos-edificios)
 
@@ -104,6 +106,8 @@ Os clientes externos fornecem o JSON do projeto nas ferramentas de edição e in
 Para alterar a espessura da laje pelo MCP, use `{ "op": "set_level", "levelId": "identificador-do-piso", "slab": { "thickness": 0.22 } }` em `casovara_edit_plan`. O modo e o perímetro existentes são preservados. A camada **Laje** da pré-visualização mostra a área ocupada pela laje e a espessura escolhida.
 
 Para gerar eletricidade e águas por MCP, envie `operations: [{ "op": "generate", "systems": ["electrical", "plumbing"] }]` com o `project`. Use `levelIds` para limitar aos pisos pretendidos e `replace: true` para substituir esquemas existentes. Para alterações, inspecione os identificadores da rede e use a operação `edit` com a especialidade, `levelId` e `changes`. O Assistente IA usa as mesmas operações e permite comparar a proposta por camada antes de a aplicar.
+
+Para gerar piso radiante por MCP, escolha `radiantPattern: "spiral"` ou `"serpentine"` em `generate` com `systems: ["radiantFloor"]`. Para fixar a posição da caixa de coletores, indique `manifoldWall: { wallId, fraction, side }` e limite `levelIds` a um piso.
 
 Em `add_run` ou `update_run`, use `run.surface` com `floor` ou `ceiling` para fixar o suporte. Em edição, `null` repõe a opção automática. A inspeção devolve a superfície efetiva juntamente com avisos sobre troços sem suporte. Os pontos intermédios continuam editáveis.
 

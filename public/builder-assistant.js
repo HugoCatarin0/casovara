@@ -29,7 +29,7 @@ const copy = {
     slabChanges: { added: 'Adicionadas', changed: 'Alteradas', removed: 'Removidas' },
     area: 'Área interior', units: 'm²', levels: 'Pisos', rooms: 'Divisões', walls: 'Paredes', items: 'Objetos e vãos',
     services: 'Pontos e traçados', layers: 'Camada da proposta', architecture: 'Arquitetura',
-    floorRoute: 'Pavimento', ceilingRoute: 'Teto',
+    floorRoute: 'Pavimento', ceilingRoute: 'Teto', spiral: 'Espiral bifilar', serpentine: 'Serpentina',
     construction: 'Plano de obra', noConstruction: 'Esta versão ainda não tem um plano de obra.',
     workdays: 'Dias úteis', savedDays: 'Dias úteis ganhos face à sequência', critical: 'Caminho crítico das dependências',
     added: 'Adicionados', changed: 'Alterados', removed: 'Removidos',
@@ -66,7 +66,7 @@ const copy = {
     comparison: 'Compare the current plan and proposal', noFloor: 'No storey', noSlab: 'No slab', slab: 'Slab', slabs: 'Slabs',
     area: 'Internal area', units: 'm²', levels: 'Storeys', rooms: 'Rooms', walls: 'Walls', items: 'Objects and openings',
     services: 'Points and routes', layers: 'Proposal layer', architecture: 'Architecture',
-    floorRoute: 'Floor', ceilingRoute: 'Ceiling',
+    floorRoute: 'Floor', ceilingRoute: 'Ceiling', spiral: 'Counterflow spiral', serpentine: 'Serpentine',
     construction: 'Construction programme', noConstruction: 'There is no construction programme in this version.',
     workdays: 'Workdays', savedDays: 'Workdays saved against sequential work', critical: 'Dependency critical path',
     added: 'Added', changed: 'Changed', removed: 'Removed',
@@ -237,18 +237,20 @@ function previewPlan(container, level, viewport, copy, differences, proposed, is
   const network = normalizeBuildingServices(level.services, level)[system];
   if (network) {
     const profile = serviceSystems[system];
+    const radiant = system === 'radiantFloor';
     const layer = svgNode(svg, 'g', { 'data-review-services': system });
     for (const run of network.runs) {
       const points = serviceRunPoints(network, run, level);
       if (!points?.length) continue;
       const surface = serviceRunSurface(system, run);
       svgNode(layer, 'polyline', { points: points.map(({ x, y }) => `${x},${y}`).join(' '), fill: 'none',
-        stroke: profile.media[run.medium].color, 'stroke-width': 2, 'stroke-linejoin': 'round',
+        stroke: profile.media[run.medium].color, 'stroke-width': radiant ? 1.5 : 2, 'stroke-linejoin': 'round',
         'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke',
         ...(surface === 'ceiling' ? { 'stroke-dasharray': '5 3' } : {}) });
     }
     const size = Math.max(.13, Math.min(.32, Math.max(width, height) * .019));
     for (const fixture of network.nodes) {
+      if (radiant && fixture.kind === 'zone') continue;
       const node = resolveServiceNode(level, fixture);
       const symbol = serviceNodeSymbol(system, node);
       const markerWidth = Math.max(size * 1.25, (symbol.length * .61 + .55) * size);
@@ -525,6 +527,7 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       detail.hidden = !detail.textContent;
     }
     const mediaUsed = new Map();
+    const radiantPatterns = new Set();
     for (const floor of [before, after]) {
       const runs = floor?.services?.[activeLayer]?.runs;
       if (!Array.isArray(runs)) continue;
@@ -533,6 +536,7 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
         const surfaces = mediaUsed.get(run.medium) ?? new Set();
         surfaces.add(serviceRunSurface(activeLayer, run));
         mediaUsed.set(run.medium, surfaces);
+        if (activeLayer === 'radiantFloor' && ['spiral', 'serpentine'].includes(run.pattern)) radiantPatterns.add(t[run.pattern]);
       }
     }
     const legend = $('service-legend');
@@ -541,7 +545,8 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       const swatch = document.createElement('span');
       swatch.style.backgroundColor = entry.color;
       const surfaces = [...mediaUsed.get(id)].map((surface) => surface === 'ceiling' ? t.ceilingRoute : t.floorRoute).join(' / ');
-      line.append(swatch, `${entry[language]} · ${surfaces}`);
+      const patterns = id === 'loop' ? [...radiantPatterns].join(' / ') : '';
+      line.append(swatch, [entry[language], surfaces, patterns].filter(Boolean).join(' · '));
       return line;
     }));
     legend.hidden = !legend.childElementCount;

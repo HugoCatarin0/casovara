@@ -131,6 +131,9 @@ test('Projects persist as private files and survive a new server instance', asyn
   editedCable.surface = 'ceiling';
   editedCable.points = [{ x: 2, y: 1 }, { x: 5, y: 1 }];
   floor.slab = { mode: 'custom', thickness: .245, footprint: { x: -.3, y: -.2, width: 9.4, depth: 6.8 } };
+  floor.services.radiantFloor = generateServices(floor, 'radiantFloor', { radiantPattern: 'serpentine' });
+  assert.ok(floor.services.radiantFloor.runs.some(({ pattern }) => pattern === 'serpentine'));
+  assert.ok(floor.services.radiantFloor.runs.some(({ port }) => port === 1));
   const invalid = await api('/api/projects', 'POST', { ...project, levelId: 'absent' }, visitor);
   assert.equal(invalid.status, 422);
   const created = await api('/api/projects', 'POST', project, visitor);

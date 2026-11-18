@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   applyServiceOperations, generateServices, inspectServices, normalizeBuildingServices,
-  resolveServiceNode, serviceNodeSymbol, serviceRunPoints, serviceSystems, snapServiceNode,
+  radiantCabinetPorts, resolveServiceNode, serviceNodeSymbol, serviceRunPoints, serviceSystems, snapServiceNode,
 } from '../public/building-services.js';
+import { makeTemplate, templates } from '../public/templates.js';
 
 const rooms = [
   { id: 'living', type: 'living', x: 0, y: 0, w: 6, h: 4 },
@@ -37,7 +38,7 @@ test('Auto generation creates each conceptual system with editable paths and len
     }
     const checked = inspectServices({ ...level, services: { [system]: generated } }, system);
     assert.ok(Object.values(checked.lengths).every((metres) => metres > 0), system);
-    assert.deepEqual(checked.warnings, [], system);
+    assert.deepEqual(checked.warnings.map(({ code }) => code), system === 'radiantFloor' ? ['radiant_manifold_wall'] : [], system);
   }
 });
 
@@ -225,4 +226,83 @@ test('Generation models electrical phase, specialised terminals and first-storey
   const radiant = generateServices(framedFloor, 'radiantFloor');
   assert.equal(radiant.nodes.find(({ kind }) => kind === 'manifold').mount, 'wall');
   assert.equal(radiant.nodes.find(({ kind }) => kind === 'zone').mount, 'floor');
+});
+
+test('Each radiant circuit joins a clear distribution wall with separate aligned supply and return ports', () => {
+  const network = generateServices(framedFloor, 'radiantFloor');
+  const cabinets = network.nodes.filter(({ kind }) => kind === 'manifold');
+  assert.equal(cabinets.length, 1);
+  const [cabinet] = cabinets;
+  const loops = network.runs.filter(({ medium }) => medium === 'loop');
+  const bank = radiantCabinetPorts(network, cabinet, framedFloor);
+  assert.equal(cabinet.mount, 'wall');
+  assert.equal(cabinet.wall.wallId, 'partition');
+  const openingClearance = .9 / 2 + bank.width / 2;
+  assert.ok(Math.abs(cabinet.x - 3) > openingClearance);
+  assert.equal(bank.ports.length, loops.length);
+  const leadEndpoints = new Set();
+  for (const loop of loops) {
+    assert.equal(loop.pattern, 'spiral');
+    const supply = network.runs.find(({ medium, to }) => medium === 'supply' && to === loop.from);
+    const back = network.runs.find(({ medium, from }) => medium === 'return' && from === loop.to);
+    assert.equal(supply.from, cabinet.id);
+    assert.equal(back.to, cabinet.id);
+    assert.equal(supply.port, back.port);
+    const start = serviceRunPoints(network, supply, framedFloor)[0];
+    const end = serviceRunPoints(network, back, framedFloor).at(-1);
+    assert.notDeepEqual(start, end);
+    assert.equal(start.y, cabinet.y);
+    assert.equal(end.y, cabinet.y);
+    leadEndpoints.add(JSON.stringify(start));
+    leadEndpoints.add(JSON.stringify(end));
+  }
+  assert.equal(leadEndpoints.size, loops.length * 2);
+  const floor = { ...framedFloor, services: { radiantFloor: network } };
+  const inspected = inspectServices(floor, 'radiantFloor');
+  assert.equal(inspected.radiantPattern, 'spiral');
+  assert.deepEqual(inspected.warnings, []);
+  assert.deepEqual(normalizeBuildingServices(JSON.parse(JSON.stringify(floor.services)), floor), floor.services);
+  for (const run of inspected.runs.filter((run) => run.port)) {
+    const path = serviceRunPoints(network, run, floor);
+    assert.deepEqual(run.start, path[0]);
+    assert.deepEqual(run.end, path.at(-1));
+  }
+});
+
+test('Radiant regeneration honours explicit wall and pattern and retains a suitable hand-picked cabinet', () => {
+  const requested = { wallId: 'north', fraction: .25, side: 1 };
+  const network = generateServices(framedFloor, 'radiantFloor', { radiantPattern: 'serpentine', manifoldWall: requested });
+  const floor = { ...framedFloor, services: { radiantFloor: network } };
+  assert.deepEqual(network.nodes[0].wall, requested);
+  assert.deepEqual(applyServiceOperations(floor, 'radiantFloor', [{ op: 'generate', replace: true }]), network);
+  const spiral = applyServiceOperations(floor, 'radiantFloor', [{ op: 'generate', replace: true, radiantPattern: 'spiral' }]);
+  assert.deepEqual(spiral.nodes[0].wall, requested);
+  assert.ok(spiral.runs.some(({ pattern }) => pattern === 'spiral'));
+  assert.throws(() => generateServices(floor, 'radiantFloor', { manifoldWall: {
+    wallId: 'partition', fraction: .5, side: 1,
+  } }), /clear wall face/);
+  const loop = network.runs.find(({ medium }) => medium === 'loop');
+  const legacy = normalizeBuildingServices({ radiantFloor: { ...network,
+    runs: network.runs.map(({ pattern, port, ...run }) => run),
+  } }, floor);
+  assert.equal(inspectServices({ ...floor, services: legacy }, 'radiantFloor').radiantPattern, undefined);
+  assert.deepEqual(legacy.radiantFloor.runs.find(({ id }) => id === loop.id).points, loop.points);
+  const edit = { op: 'update_run', id: loop.id, run: { label: 'Suite', points: loop.points } };
+  assert.equal(applyServiceOperations(floor, 'radiantFloor', [edit]).runs.find(({ id }) => id === loop.id).pattern, 'serpentine');
+  edit.run.points = loop.points.slice(1);
+  assert.equal(applyServiceOperations(floor, 'radiantFloor', [edit]).runs.find(({ id }) => id === loop.id).pattern, undefined);
+});
+
+test('Both radiant patterns route cabinet leads around slab-backed coils in the built-in houses', () => {
+  for (const { id } of templates) {
+    for (const floor of makeTemplate(id, 'pt-PT').levels) {
+      for (const radiantPattern of ['spiral', 'serpentine']) {
+        const radiantFloor = generateServices(floor, 'radiantFloor', { radiantPattern });
+        const drawing = inspectServices({ ...floor, services: { radiantFloor } }, 'radiantFloor');
+        assert.equal(drawing.nodes.filter(({ kind, mount }) => kind === 'manifold' && mount === 'wall').length, 1);
+        assert.equal(drawing.radiantPattern, radiantPattern);
+        assert.deepEqual(drawing.warnings, [], [id, floor.id, radiantPattern].join('/'));
+      }
+    }
+  }
 });

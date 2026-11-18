@@ -2,7 +2,7 @@ import { elements, findWall, projectArea, roomStyles, wallLength } from './build
 import { estimateProject, systemById, systems } from './core.js';
 import { normalizeObjectCatalogRef } from './object-catalog.js';
 import {
-  applyServiceOperations, generateServices, inspectServices, normalizeBuildingServices, serviceLimits, serviceMounts, servicePhases, serviceSystems,
+  applyServiceOperations, generateServices, inspectServices, normalizeBuildingServices, radiantPatterns, serviceLimits, serviceMounts, servicePhases, serviceSystems,
 } from './building-services.js';
 import { applyConstructionOperations, constructionLimits, normalizeConstructionSchedule, scheduleConstruction, validateConstructionSchedule } from './construction-schedule.js';
 import { generateConstructionPlan } from './construction-tasks.js';
@@ -146,6 +146,8 @@ const serviceEdits = [
     levelIds: { ...list(id, 1, 20), description: 'Storeys to generate on. Omit to process all storeys.' },
     replace: { ...flag, description: 'Replace existing schemes only when expressly requested. Defaults to preserving existing schemes.' },
     phase: { ...servicePhase, description: 'Phase for the main electrical supply entry. Defaults to the current phase when replacing an existing scheme, or single for a new scheme.' },
+    radiantPattern: { ...choice(radiantPatterns), description: 'Radiant floor only. Choose counterflow spiral or serpentine. Defaults to the saved pattern when replacing a known layout, or spiral for a new layout.' },
+    manifoldWall: { ...serviceWall, description: 'Optional distribution wall face and position for the radiant floor manifold cabinet. Select exactly one storey when choosing a wall.' },
   }, ['systems']),
   operation('edit', { system: serviceSystem, levelId: id, changes: list({ oneOf: serviceChanges }, 1, serviceLimits.operations) }, ['system', 'changes']),
 ];
@@ -190,7 +192,7 @@ export const designTools = Object.freeze([
   },
   {
     name: 'casovara_design_services', title: 'Design building services',
-    description: 'Generate or edit schematic electrical, plumbing, VMC, air conditioning and radiant-floor networks. Adjust wall face, fixture mounting, outlet groups, supply phase, floor or ceiling route support, and route waypoints with exact ids. Returns an editable proposal for review.',
+    description: 'Generate or edit schematic electrical, plumbing, VMC, air conditioning and radiant-floor networks. Adjust wall face, fixture mounting, outlet groups, supply phase, floor or ceiling route support, radiant pipe layout and manifold position, or route waypoints with exact ids. Returns an editable proposal for review.',
     inputSchema: object({ project: projectInput, operations: list({ oneOf: serviceEdits }, 1, 40) }, ['operations']),
   },
   {
@@ -212,6 +214,7 @@ Use Casovara to draw editable house plans. Work in metres with x and y as plan a
 - Set a storey's structural slab with \`slab\` on creation, addition or a \`set_level\` edit. The default \`auto\` slab follows the indoor rooms. Use \`custom\` with a rectangular \`footprint\` (x, y, width and depth in metres) or use \`none\` to disable it. Edit \`thickness\` in metres independently of the ceiling and floor finish. Keep the current mode and footprint when changing thickness alone. The default thickness is for visual planning.
 - Use \`casovara_design_services\` to generate or adjust building services. The supported systems are ${serviceIds.map((id) => `\`${id}\``).join(', ')}. Specify radiant floor only if the user asks for it or confirms it for relevant rooms. A schematic generation preserves existing work unless the user requests replacement. Use an \`edit\` operation with the exact system and storey ids and a batch of node or run changes. Each run joins two nodes in the same system and takes optional intermediate points, omitting its endpoints. A storey schematic leaves connections between storeys for coordination. These tools do not determine loads, sizes, slopes, equipment ratings or regulatory compliance.
 - Use \`run.surface\` to override the horizontal route support to \`floor\` or \`ceiling\`. The automatic surface follows the network. Lighting, controls, VMC ducts and refrigerant routes default to ceiling. Power, plumbing, condensate and radiant-floor circuits default to floor. Pass \`null\` to restore the default and omit the field to preserve any override. Wall-mounted fixtures get vertical segments along their host wall. Review \`unsupported_surface\` warnings and move waypoints to keep the route within its supporting footprint.
+- For radiant floor, choose \`radiantPattern: "spiral"\` for an interleaved counterflow layout or \`"serpentine"\` for a meander. Each circuit starts and returns at a dedicated port pair on the storey's manifold cabinet. Set \`manifoldWall: {wallId, fraction, side}\` and a single \`levelIds\` entry to choose its wall. Automatic generation can retain a suitable existing cabinet when replacing the scheme. Use the default geometry for coordination only.
 - For wall-mounted fixtures, use \`mount: "wall"\` and \`wall: {wallId, fraction, side}\`. The fraction runs from the wall's first endpoint (0) to its second (1). Side 1 follows the normal (-dy, dx) in plan coordinates and side -1 faces the other way. Choose the served room's side and avoid openings. The wall anchor supplies x and y. Use \`floor\`, \`ceiling\` or \`free\` and x, y for other positions. Generated light points use the ceiling. A wall switch, board or socket normally faces its room. Apply the same mounting convention to fixtures in the other systems.
 - A group of three sockets is one \`outlet\` node with \`count: 3\`, shown as T 3×. A generated electrical \`supplyEntry\` joins the ground floor's board through \`serviceFeed\`. Request \`phase: "three"\` at generation, or update the entry node's phase to \`three\` or \`single\`. The generated phase defaults to \`single\` when unspecified and is a planning assumption. The ground floor plumbing proposes a cold-water entry and wastewater outlet. Coordinate exterior terminals and floor-to-floor connections against the project.
 - Building services media and compatible node kinds per system: ${Object.entries(serviceSystems).map(([id, { kinds, media }]) => `${id}: nodes ${Object.keys(kinds).join(', ')}; media ${Object.keys(media).join(', ')}`).join(' | ')}.
@@ -960,6 +963,9 @@ function editServices(project, operations) {
       if (!chosen) throw new Error('The specified storey does not exist.');
       return chosen;
     }) : project.levels;
+    if (operation.manifoldWall && (levels.length !== 1 || !operation.systems.includes('radiantFloor'))) {
+      throw new Error('Select one storey and include radiant floor to choose the manifold wall.');
+    }
     for (const floor of levels) {
       const services = normalizeBuildingServices(floor.services, floor);
       for (const system of new Set(operation.systems)) {
@@ -973,7 +979,10 @@ function editServices(project, operations) {
           continue;
         }
         const phase = operation.phase ?? existing?.nodes.find(({ kind }) => kind === 'supplyEntry')?.phase;
-        const network = generateServices(floor, system, { includeEntry: floor === project.levels[0], phase });
+        const network = generateServices(floor, system, {
+          includeEntry: floor === project.levels[0], phase,
+          ...(system === 'radiantFloor' ? { radiantPattern: operation.radiantPattern, manifoldWall: operation.manifoldWall } : {}),
+        });
         if (network.nodes.length || network.runs.length) {
           services[system] = network;
           changes.push({ levelId: floor.id, system, result: 'generated' });

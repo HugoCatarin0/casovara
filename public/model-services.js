@@ -1,4 +1,4 @@
-import { resolveServiceNode, serviceLimits, serviceSystems, snapServiceNode } from './building-services.js';
+import { radiantCabinetPorts, resolveServiceNode, serviceLimits, serviceRunPoints, serviceSystems, snapServiceNode } from './building-services.js';
 import { shade } from './model-furniture.js';
 import { isServiceExteriorNode, serviceRunSurface, supportedRouteSpans } from './service-routing.js';
 import { effectiveWallHeight, wallBaseOffset } from './wall-spec.js';
@@ -98,6 +98,42 @@ function mountedFixture(faces, owner, node, size, color, selected) {
   }
 }
 
+function radiantCabinet(faces, owner, node, selected) {
+  const { wall, height, cabinet } = node;
+  const width = cabinet.width;
+  const tall = cabinetHeight(node);
+  if (tall < .08) return;
+  const vertex = (u, v, inset) => {
+    const { x, y } = wallPoint(wall, u, inset);
+    return [x, y, height + v];
+  };
+  const plate = (x, y, w, h, back, depth, fill) =>
+    fixturePlate(faces, owner, vertex, centeredSquare({ x, y }, w, h), back, depth, fill);
+  const rim = Math.min(.028, tall * .13);
+  const inside = width - rim * 2;
+  const frame = selected ? '#83cabc' : '#e8e9e1';
+  plate(0, 0, width, tall, .001, .009, '#464d53');
+  for (const side of [-1, 1]) {
+    plate(side * (width - rim) / 2, 0, rim, tall, .004, .032, frame);
+    plate(0, side * (tall - rim) / 2, inside, rim, .004, .032, frame);
+  }
+  const { supply, return: returning } = serviceSystems.radiantFloor.media;
+  for (const [line, color] of [[tall * .20, supply.color], [-tall * .12, returning.color]]) {
+    plate(0, line, inside * .86, Math.min(.027, tall * .08), .014, .015, color);
+  }
+  const pinWidth = Math.min(.012, cabinet.ports.length ? inside / (cabinet.ports.length * 5) : .012);
+  for (const { supplyOffset, returnOffset } of cabinet.ports) {
+    const bottom = -tall / 2 + rim * .4;
+    for (const [offset, top, depth, color] of [
+      [supplyOffset, tall * .23, .022, supply.color],
+      [returnOffset, -tall * .08, .032, returning.color],
+    ]) {
+      plate(offset, (top + bottom) / 2, pinWidth, top - bottom, depth, .007, color);
+      plate(offset, top, pinWidth * 1.35, Math.min(.021, tall * .08), depth + .008, .004, '#e3d5b1');
+    }
+  }
+}
+
 const validPosition = (point) => point && Number.isFinite(point.x) && Number.isFinite(point.y);
 
 const covers = ({ x, y, width, depth }, point) => point.x >= x - 1e-6 && point.y >= y - 1e-6 &&
@@ -115,7 +151,7 @@ function wallFrame(position, host, levelHeight, floor, sectionTop, openings) {
   const fullHeight = effectiveWallHeight(host, levelHeight);
   return {
     x: host.x1 + dx * fraction + nx * halfThickness, y: host.y1 + dy * fraction + ny * halfThickness,
-    tx, ty, nx, ny, halfThickness, length, fraction, bottom,
+    tx, ty, nx, ny, halfThickness, length, fraction, side, bottom,
     fullHeight, top: Math.min(sectionTop, bottom + fullHeight),
     openings: openings.get(host.id) ?? [],
   };
@@ -123,6 +159,46 @@ function wallFrame(position, host, levelHeight, floor, sectionTop, openings) {
 
 function wallPoint(wall, tangent, normal) {
   return { x: wall.x + wall.tx * tangent + wall.nx * normal, y: wall.y + wall.ty * tangent + wall.ny * normal };
+}
+
+function cabinetHeight({ wall, height }) {
+  return Math.min(.46, 2 * Math.max(0, Math.min(height - wall.bottom, wall.top - height)));
+}
+
+function manifoldEndpoint(node, point) {
+  const { wall } = node;
+  const offset = (point.x - wall.x) * wall.tx + (point.y - wall.y) * wall.ty;
+  const location = wallPoint(wall, offset, 0);
+  return {
+    ...node, ...location, height: node.height - cabinetHeight(node) / 2,
+    wall: { ...wall, ...location, fraction: wall.fraction - wall.side * offset / wall.length },
+  };
+}
+
+function roundedCircuit(points) {
+  const rounded = [points[0]];
+  for (let index = 1; index + 1 < points.length; index++) {
+    const a = points[index - 1], b = points[index], c = points[index + 1];
+    const before = Math.hypot(a.x - b.x, a.y - b.y);
+    const after = Math.hypot(c.x - b.x, c.y - b.y);
+    const radius = Math.min(.06, before / 4, after / 4);
+    const cross = (a.x - b.x) * (c.y - b.y) - (a.y - b.y) * (c.x - b.x);
+    if (radius < .008 || Math.abs(cross) < 1e-6) {
+      rounded.push(b);
+      continue;
+    }
+    const from = { x: b.x + (a.x - b.x) * radius / before, y: b.y + (a.y - b.y) * radius / before };
+    const to = { x: b.x + (c.x - b.x) * radius / after, y: b.y + (c.y - b.y) * radius / after };
+    for (const amount of [0, 1 / 3, 2 / 3, 1]) {
+      const remaining = 1 - amount;
+      rounded.push({
+        x: remaining ** 2 * from.x + 2 * amount * remaining * b.x + amount ** 2 * to.x,
+        y: remaining ** 2 * from.y + 2 * amount * remaining * b.y + amount ** 2 * to.y,
+      });
+    }
+  }
+  rounded.push(points.at(-1));
+  return rounded;
 }
 
 function mountingPosition(level, source, defaults) {
@@ -205,7 +281,8 @@ export function appendModelServices(faces, level, floor, systems, selected, {
         visible = Number.isFinite(support);
         height = mount === 'ceiling' ? support - .006 : support + .006;
       }
-      nodes.set(source.id, { ...source, ...position, x: location.x, y: location.y, mount, wall, height, visible });
+      const cabinet = system === 'radiantFloor' && source.kind === 'manifold' && wall ? radiantCabinetPorts(network, position, level) : null;
+      nodes.set(source.id, { ...source, ...position, x: location.x, y: location.y, mount, wall, height, visible, cabinet });
     }
     const active = (kind, id) => selected?.levelId === level.id && selected.system === system && selected.kind === kind && selected.id === id;
 
@@ -213,10 +290,15 @@ export function appendModelServices(faces, level, floor, systems, selected, {
       if (!run) continue;
       const material = Object.hasOwn(descriptor.media, run.medium) ? descriptor.media[run.medium] : null;
       if (!material) continue;
-      const start = nodes.get(run.from), end = nodes.get(run.to);
+      let start = nodes.get(run.from), end = nodes.get(run.to);
       if (!start || !end) continue;
+      if (run.port && (start.cabinet || end.cabinet)) {
+        const route = serviceRunPoints(network, run, level);
+        if (start.cabinet) start = manifoldEndpoint(start, route[0]);
+        if (end.cabinet) end = manifoldEndpoint(end, route.at(-1));
+      }
       const surface = serviceRunSurface(system, run);
-      const size = run.medium === 'loop' ? .025 : (system === 'vmc' || wideRoutes.has(run.medium)) ? .055 : .035;
+      const size = system === 'radiantFloor' ? .026 : (system === 'vmc' || wideRoutes.has(run.medium)) ? .055 : .035;
       const isActive = active('run', run.id);
       const width = isActive ? size * 1.65 : size;
       // Keep coincident traces on the same surface without sharing the same depth.
@@ -224,7 +306,8 @@ export function appendModelServices(faces, level, floor, systems, selected, {
       const color = isActive ? shade(material.color, 32) : material.color;
       const owner = { kind: 'service-run', system, id: run.id, levelId: level.id };
       const bends = Array.isArray(run.points) ? run.points.filter(validPosition) : [];
-      const chain = [start, ...bends, end];
+      const route = [start, ...bends, end];
+      const chain = system === 'radiantFloor' && run.medium === 'loop' ? roundedCircuit(route) : route;
       if (surface === 'floor') {
         const datum = floor + separation + (exposeFloor ? .003 : -.025);
         drawSurfaceRun(faces, owner, chain, floorAreas, datum, width, .006, color);
@@ -247,8 +330,14 @@ export function appendModelServices(faces, level, floor, systems, selected, {
     for (const node of nodes.values()) {
       if (!node.visible) continue;
       const owner = { kind: 'service-node', system, id: node.id, levelId: level.id };
+      const selectedNode = active('node', node.id);
+      if (node.cabinet) {
+        radiantCabinet(faces, owner, node, selectedNode);
+        continue;
+      }
+      if (system === 'radiantFloor' && node.kind === 'zone' && !selectedNode) continue;
       const width = largeDevices.has(node.kind) ? .30 : .17;
-      mountedFixture(faces, owner, node, width, descriptor.color, active('node', node.id));
+      mountedFixture(faces, owner, node, width, descriptor.color, selectedNode);
     }
   }
 }
