@@ -22,6 +22,24 @@ Use `Ctrl/⌘ + K` para localizar ferramentas, compartimentos e vãos, ou `1`, `
 
 O painel **Ambiente 3D** controla a apresentação em Materiais, Maquete ou Técnico, a altura do corte, o terreno, o mobiliário e as sombras. As vistas guardadas incluem estes controlos. As predefinições de luz usam a direção e a altura solar escolhidas no painel para estudos visuais.
 
+## Assistente de projeto
+
+Abra **Assistente IA** no editor e descreva uma casa ou uma alteração à planta aberta. O assistente usa as ferramentas de desenho da aplicação para criar uma proposta editável. Reveja a planta por piso, as alterações e os avisos. **Aplicar à planta** guarda a alteração no histórico do editor, onde pode usar **Desfazer**. Com a opção **Experimentar um T3**, este fluxo funciona localmente com um exemplo predefinido.
+
+Para pedidos em linguagem natural, configure `OPENAI_API_KEY` no ambiente do servidor. O modelo predefinido é `gpt-4.1-mini` e pode ser escolhido com `CASOVARA_OPENAI_MODEL`. Para carregar estas variáveis de um ficheiro `.env` local ignorado pelo Git, arranque com `node --env-file=.env server.js`. Por predefinição, o endpoint de IA paga só fica ativo em localhost. Num alojamento com acesso controlado, pode ativá-lo com `CASOVARA_AI_PUBLIC=1`. Só ao enviar um pedido é que o assistente partilha o texto, o contexto da conversa e o resumo da geometria com a OpenAI. [Documentação da API e das ferramentas](https://developers.openai.com/api/docs/guides/function-calling)
+
+## MCP Apps e WebMCP
+
+O servidor expõe MCP por Streamable HTTP em `http://127.0.0.1:3000/mcp`. Para clientes remotos, use o URL HTTPS da instância publicada. O recurso `casovara://skills/house-planning` e a ferramenta `casovara_get_planner_skill` ensinam as convenções de geometria e os exemplos de chamadas. O prompt `casovara_plan_house` junta o guia a um pedido do utilizador.
+
+| Ferramenta | Ação |
+| --- | --- |
+| `casovara_create_plan` | Criar uma planta editável com pisos, divisões, paredes, vãos e cobertura. |
+| `casovara_edit_plan` | Aplicar um lote de alterações à cópia de um projeto fornecido. |
+| `casovara_inspect_plan` | Obter IDs e medidas de geometria, estimativa indicativa e avisos. |
+
+Os clientes externos fornecem o JSON do projeto nas ferramentas de edição e inspeção. O recurso MCP Apps permite rever a planta por piso e exportar `.casovara` para **Importar projeto** no planeador. Em navegadores com WebMCP, as ferramentas da página podem inspecionar a planta aberta e preparar propostas para revisão no editor. [Especificação MCP Apps](https://apps.extensions.modelcontextprotocol.io/api/documents/overview.html) · [WebMCP no Chromium](https://developer.chrome.com/docs/modern-web-guidance/guides/webmcp/webmcp)
+
 ## Projetos, alojamento e domínios
 
 O planeador guarda cada projeto num ficheiro JSON. Um cookie de sessão associa os ficheiros ao navegador. É possível transferir um projeto para outro navegador através da exportação e importação de ficheiros. O cookie de sessão e o de idioma expiram após um ano. O site público também pode guardar o tema selecionado num cookie.

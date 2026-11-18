@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Casovara</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font: 15px/1.45 system-ui, sans-serif;
+      --ink: #202a33;
+      --muted: #546775;
+      --surface: #fbfcfd;
+      --secondary: #eaf1f4;
+      --border: #ccd9df;
+      --accent: #933f2d;
+      --wall: #283a47;
+      --door: #8d4d3e;
+      --glass: #27638a;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+      --ink: #e9f0f4;
+      --muted: #aec0cb;
+      --surface: #17242e;
+      --secondary: #1e303d;
+      --border: #3b5361;
+      --accent: #ffc1aa;
+      --wall: #e0edf4;
+      --door: #f4ac97;
+      --glass: #8fd3f8;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 12px; color: var(--ink); }
+    [hidden] { display: none !important; }
+    main { max-width: 900px; margin: auto; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); overflow: hidden; }
+    header, footer { padding: 16px 18px; }
+    header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .brand { font-size: .88rem; font-weight: 730; letter-spacing: .035em; color: var(--accent); }
+    h1 { margin: 4px 0; font-size: clamp(1.2rem, 3.5vw, 1.65rem); line-height: 1.2; overflow-wrap: anywhere; }
+    h2 { margin: 0 0 6px; font-size: .98rem; }
+    p { margin: 4px 0; }
+    .muted, label { color: var(--muted); font-size: .87rem; }
+    label { display: grid; gap: 3px; min-width: 115px; max-width: 100%; }
+    button, select, textarea { color: inherit; font: inherit; border: 1px solid var(--border); background: var(--surface); border-radius: 8px; }
+    button, select { min-height: 42px; padding: 7px 10px; }
+    button { cursor: pointer; }
+    button:disabled { cursor: progress; opacity: .65; }
+    button.primary { color: var(--surface); background: var(--ink); border-color: var(--ink); }
+    button:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    #view { display: block; width: 100%; height: clamp(240px, 55vw, 420px); border-block: 1px solid var(--border); background: var(--secondary); }
+    footer { display: grid; gap: 12px; }
+    .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    ul { margin: 4px 0; padding-left: 22px; }
+    details { border-top: 1px solid var(--border); padding-top: 8px; }
+    summary { color: var(--muted); cursor: pointer; }
+    textarea { display: block; width: 100%; margin-top: 8px; padding: 8px; font: .8rem/1.4 ui-monospace, monospace; }
+    @media (max-width: 420px) {
+      body { padding: 6px; }
+      header, footer { padding: 12px; }
+      label { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+  <main id="preview">
+    <header>
+      <div>
+        <span class="brand">casovara</span>
+        <h1 id="title">Pré-visualização da planta</h1>
+        <p id="metrics" class="muted"></p>
+      </div>
+      <label id="levelField" hidden><span id="levelLabel">Piso</span><select id="levels"></select></label>
+    </header>
+    <svg id="view" role="img" aria-label="Planta do piso" hidden></svg>
+    <footer>
+      <p id="status" role="status">A aguardar o projeto.</p>
+      <section id="checks" hidden>
+        <h2 id="checksTitle">Verificação da geometria</h2>
+        <p id="checksSummary" class="muted"></p>
+        <ul id="warnings"></ul>
+      </section>
+      <div id="actions" class="actions" hidden>
+        <button id="download" class="primary" type="button">Descarregar projeto</button>
+        <button id="inspect" type="button">Verificar planta</button>
+      </div>
+      <details id="data" hidden>
+        <summary id="dataLabel">Ficheiro do projeto (JSON)</summary>
+        <textarea id="raw" rows="6" readonly spellcheck="false"></textarea>
+      </details>
+    </footer>
+  </main>
+  <script>
+    const appName = 'Casovara plan review';
+    const protocol = '2026-01-26';
+    const host = window.parent;
+    const svgNamespace = 'http://www.w3.org/2000/svg';
+    const ui = Object.fromEntries([
+      'preview', 'title', 'metrics', 'levelField', 'levelLabel', 'levels', 'view', 'status',
+      'checks', 'checksTitle', 'checksSummary', 'warnings', 'actions', 'download', 'inspect', 'data', 'dataLabel', 'raw',
+    ].map((id) => [id, document.getElementById(id)]));
+    const copy = {
+      pt: {
+        title: 'Pré-visualização da planta', waiting: 'A aguardar o projeto.', level: 'Piso', image: 'Planta do piso',
+        checks: 'Verificação da geometria', download: 'Descarregar projeto', inspect: 'Verificar planta',
+        data: 'Ficheiro do projeto (JSON)', empty: 'Este piso ainda está vazio.', checking: 'A verificar a planta…',
+        unsupported: 'Este anfitrião não permite verificar novamente. Pode abrir o ficheiro no planeador.',
+        connect: 'Abra esta pré-visualização através de um cliente MCP Apps.',
+        export: 'Se o anfitrião bloquear a transferência, copie o JSON abaixo e guarde-o num ficheiro .casovara.',
+        clear: 'Sem avisos de geometria na verificação automática.', metric: (area, levels, rooms) => `${area} m² · ${levels} ${levels === 1 ? 'piso' : 'pisos'} · ${rooms} ${rooms === 1 ? 'espaço' : 'espaços'}`,
+        rooms: { living: 'Sala', kitchen: 'Cozinha', bedroom: 'Quarto', bath: 'Casa de banho', circulation: 'Circulação', outdoor: 'Exterior' },
+      },
+      en: {
+        title: 'Floor plan preview', waiting: 'Waiting for the project.', level: 'Storey', image: 'Floor plan',
+        checks: 'Geometry check', download: 'Download project', inspect: 'Check plan', data: 'Project file (JSON)',
+        empty: 'This storey is empty.', checking: 'Checking the plan…',
+        unsupported: 'This host could not rerun the check. You can open the file in the planner.',
+        connect: 'Open this preview through an MCP Apps client.',
+        export: 'If the host blocks downloads, copy the JSON below and save it to a .casovara file.',
+        clear: 'The automated check produced no geometry warnings.', metric: (area, levels, rooms) => `${area} m² · ${levels} ${levels === 1 ? 'storey' : 'storeys'} · ${rooms} ${rooms === 1 ? 'space' : 'spaces'}`,
+        rooms: { living: 'Living room', kitchen: 'Kitchen', bedroom: 'Bedroom', bath: 'Bathroom', circulation: 'Hallway', outdoor: 'Outdoor' },
+      },
+    };
+    function appLocale(languages) {
+      const language = languages.find((entry) => /^(en|pt)(-|$)/i.test(entry))?.toLowerCase();
+      if (language?.startsWith('pt')) return 'pt-PT';
+      return language === 'en-pt' ? 'en-PT' : 'en-INT';
+    }
+
+    let locale = appLocale(navigator.languages || [navigator.language]);
+    let profile = {};
+    let project;
+    let analysis;
+    let sequence = 0;
+    let bridgeReady = false;
+    let serverTools = false;
+    let parentOrigin = '*';
+    let teardown = false;
+    let lastSize;
+    let observer;
+    const pending = new Map();
+    const strings = () => locale === 'pt-PT' ? copy.pt : copy.en;
+    const format = (value) => new Intl.NumberFormat(locale === 'en-INT' ? 'en-GB' : 'pt-PT', { maximumFractionDigits: 1 }).format(value);
+
+    function notify(method, params) {
+      host.postMessage({ jsonrpc: '2.0', method, ...(params ? { params } : {}) }, parentOrigin);
+    }
+
+    function request(method, params) {
+      return new Promise((resolve, reject) => {
+        const id = ++sequence;
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error('The host did not respond.'));
+        }, 15000);
+        pending.set(id, { resolve, reject, timer });
+        host.postMessage({ jsonrpc: '2.0', id, method, params }, parentOrigin);
+      });
+    }
+
+    function showStatus(message) {
+      ui.status.textContent = message;
+      ui.status.hidden = !message;
+    }
+
+    function setHostContext(context = {}) {
+      profile = { ...profile, ...context };
+      if (typeof profile.locale === 'string') locale = appLocale([profile.locale, ...(navigator.languages || [navigator.language])]);
+      document.documentElement.lang = locale === 'en-INT' ? 'en' : locale;
+      document.documentElement.dataset.theme = profile.theme === 'dark' ? 'dark' : 'light';
+      ui.levelLabel.textContent = strings().level;
+      ui.view.setAttribute('aria-label', strings().image);
+      ui.checksTitle.textContent = strings().checks;
+      ui.download.textContent = strings().download;
+      ui.inspect.textContent = strings().inspect;
+      ui.dataLabel.textContent = strings().data;
+      ui.raw.setAttribute('aria-label', strings().data);
+      if (project) render();
+      else {
+        ui.title.textContent = strings().title;
+        showStatus(strings().waiting);
+      }
+    }
+
+    function svg(name, attributes = {}, label) {
+      const el = document.createElementNS(svgNamespace, name);
+      for (const [key, value] of Object.entries(attributes)) el.setAttribute(key, String(value));
+      if (label !== undefined) el.textContent = label;
+      return el;
+    }
+
+    function draw(level) {
+      const finite = (entry, keys) => keys.every((key) => Number.isFinite(entry?.[key]) && Math.abs(entry[key]) < 2000);
+      const rooms = level.rooms.filter((room) => finite(room, ['x', 'y', 'w', 'h']) && room.w > 0 && room.h > 0);
+      const walls = level.walls.filter((wall) => finite(wall, ['x1', 'y1', 'x2', 'y2', 'thickness']));
+      const items = level.items.filter((item) => finite(item, ['x', 'y', 'width', 'depth', 'angle']));
+      const points = [
+        ...rooms.flatMap(({ x, y, w, h }) => [[x, y], [x + w, y + h]]),
+        ...walls.flatMap(({ x1, y1, x2, y2 }) => [[x1, y1], [x2, y2]]),
+        ...items.flatMap(({ x, y, width, depth }) => {
+          const radius = Math.hypot(width, depth) / 2;
+          return [[x - radius, y - radius], [x + radius, y + radius]];
+        }),
+      ];
+      ui.view.replaceChildren();
+      if (points.length === 0) {
+        ui.view.setAttribute('viewBox', '0 0 240 130');
+        ui.view.append(svg('text', { x: 120, y: 69, 'text-anchor': 'middle', fill: 'var(--muted)', 'font-size': 9 }, strings().empty));
+        return;
+      }
+      const xs = points.map(([x]) => x);
+      const ys = points.map(([, y]) => y);
+      const left = Math.min(...xs);
+      const top = Math.min(...ys);
+      const width = Math.max(1, Math.max(...xs) - left);
+      const height = Math.max(1, Math.max(...ys) - top);
+      const span = Math.max(width, height);
+      const pad = Math.max(.55, span * .067);
+      ui.view.setAttribute('viewBox', [left - pad, top - pad, width + 2 * pad, height + 2 * pad].join(' '));
+      const lines = svg('pattern', { id: 'metre-grid', width: 1, height: 1, patternUnits: 'userSpaceOnUse' });
+      lines.append(svg('path', { d: 'M 0 1 V 0 H 1', fill: 'none', stroke: 'var(--border)', 'stroke-width': Math.max(.012, span * .0006) }));
+      ui.view.append(lines, svg('rect', {
+        x: left - pad, y: top - pad, width: width + 2 * pad, height: height + 2 * pad, fill: 'url(#metre-grid)',
+      }));
+
+      const colors = { living: '#a9c4ba', kitchen: '#d9ba87', bedroom: '#c4a7a4', bath: '#a5bccd', circulation: '#b7bfca', outdoor: '#9fba8d' };
+      for (const room of rooms) {
+        const name = String(room.name || strings().rooms[room.type] || '').slice(0, 75);
+        const fill = Object.hasOwn(colors, room.type) ? colors[room.type] : '#bbc9cd';
+        const box = svg('rect', { x: room.x, y: room.y, width: room.w, height: room.h, fill, opacity: .52 });
+        box.append(svg('title', {}, name));
+        ui.view.append(box);
+      }
+
+      const wallById = new Map(walls.map((wall) => [wall.id, wall]));
+      const inspection = Array.isArray(analysis?.levels) ? analysis.levels.find((entry) => entry?.id === level.id) : null;
+      const openingWalls = new Map(Array.isArray(inspection?.items) ? inspection.items.filter(Boolean).map(({ id, wallId }) => [id, wallId]) : []);
+      for (const { x1, y1, x2, y2, thickness } of walls) {
+        ui.view.append(svg('line', { x1, y1, x2, y2, stroke: 'var(--wall)', 'stroke-width': Math.max(.045, thickness), 'stroke-linecap': 'square' }));
+      }
+      for (const item of items) {
+        const { x, y, width: wide, depth, angle, type } = item;
+        const transform = `translate(${x} ${y}) rotate(${angle})`;
+        if (['door', 'doubleDoor', 'window', 'slidingWindow'].includes(type)) {
+          const doors = type === 'doubleDoor' ? 2 : type === 'door' ? 1 : 0;
+          const glazing = ['window', 'slidingWindow'].includes(type);
+          const hue = glazing ? 'var(--glass)' : 'var(--door)';
+          const wall = wallById.get(openingWalls.get(item.id));
+          const group = svg('g', { transform });
+          group.append(svg('line', {
+            x1: -wide / 2, x2: wide / 2, y1: 0, y2: 0, stroke: 'var(--surface)', 'stroke-width': Math.max(wall?.thickness || depth, .08),
+          }));
+          let path = `M ${-wide / 2} 0 h ${wide}`;
+          if (doors) {
+            const leaf = wide / doors;
+            path = `M ${-wide / 2} 0 v ${leaf} a ${leaf} ${leaf} 0 0 0 ${leaf} ${-leaf}`;
+            if (doors === 2) path += ` M ${wide / 2} 0 v ${leaf} a ${leaf} ${leaf} 0 0 1 ${-leaf} ${-leaf}`;
+          }
+          group.append(svg('path', { d: path, fill: 'none', stroke: hue, 'stroke-width': Math.max(.025, span * .001) }));
+          ui.view.append(group);
+        } else {
+          ui.view.append(svg('rect', {
+            x: -wide / 2, y: -depth / 2, width: wide, height: depth, rx: Math.min(.06, depth / 4),
+            transform, fill: 'var(--surface)', 'fill-opacity': .7, stroke: 'var(--muted)', 'stroke-width': .024,
+          }));
+        }
+      }
+      for (const room of rooms) {
+        const name = String(room.name || strings().rooms[room.type] || '').trim();
+        if (!name) continue;
+        const size = Math.min(1, room.w / (Math.max(7, name.length) * .63), room.h * .25, span * .033);
+        if (size < span * .013) continue;
+        ui.view.append(svg('text', {
+          x: room.x + room.w / 2, y: room.y + room.h / 2, fill: 'var(--ink)', stroke: 'var(--surface)',
+          'stroke-width': size * .15, 'paint-order': 'stroke', 'text-anchor': 'middle', 'dominant-baseline': 'middle',
+          'font-size': size, 'font-weight': 650,
+        }, name.slice(0, 75)));
+      }
+    }
+
+    function render() {
+      const rooms = project.levels.reduce((total, level) => total + level.rooms.length, 0);
+      const area = Number.isFinite(analysis?.area) ? format(analysis.area) : '—';
+      ui.title.textContent = project.name;
+      ui.metrics.textContent = strings().metric(area, project.levels.length, rooms);
+      const current = project.levels.find(({ id }) => id === ui.levels.value) ??
+        project.levels.find(({ id }) => id === project.levelId) ?? project.levels[0];
+      const options = project.levels.map((level) => {
+        const option = document.createElement('option');
+        option.value = level.id;
+        option.textContent = level.name;
+        return option;
+      });
+      ui.levels.replaceChildren(...options);
+      ui.levels.value = current.id;
+      ui.levelField.hidden = project.levels.length < 2;
+      ui.view.removeAttribute('hidden');
+      draw(current);
+      ui.actions.hidden = false;
+      ui.inspect.hidden = !serverTools;
+      ui.data.hidden = false;
+
+      const warnings = Array.isArray(analysis?.warnings) ? analysis.warnings : null;
+      ui.checks.hidden = warnings === null;
+      ui.warnings.replaceChildren();
+      if (warnings !== null) {
+        ui.checksSummary.textContent = warnings.length ? '' : strings().clear;
+        for (const warning of warnings.slice(0, 12)) {
+          const entry = document.createElement('li');
+          const floor = project.levels.length > 1 ? project.levels.find(({ id }) => id === warning?.levelId) : null;
+          const message = String(warning?.message || '').slice(0, 500);
+          entry.textContent = floor ? `${floor.name} — ${message}` : message;
+          ui.warnings.append(entry);
+        }
+        if (warnings.length > 12) {
+          const entry = document.createElement('li');
+          entry.textContent = `+${warnings.length - 12}`;
+          ui.warnings.append(entry);
+        }
+      }
+    }
+
+    function validProject(value) {
+      return typeof value?.name === 'string' && Array.isArray(value.levels) && value.levels.length > 0 && value.levels.length <= 20 &&
+        value.levels.every((level) => typeof level?.id === 'string' && typeof level.name === 'string' &&
+          [level.rooms, level.walls, level.items].every((items) => Array.isArray(items) && items.length <= 1000));
+    }
+
+    function acceptResult(result) {
+      if (result?.isError) {
+        showStatus(String(result.content?.[0]?.text || strings().unsupported).slice(0, 1000));
+        return;
+      }
+      let structured = result?.structuredContent;
+      if (!structured && typeof result?.content?.[0]?.text === 'string') {
+        try { structured = JSON.parse(result.content[0].text); } catch { return; }
+      }
+      if (validProject(structured?.project)) {
+        if (structured.project.name !== project?.name) ui.levels.value = '';
+        project = structured.project;
+        ui.raw.value = JSON.stringify({ app: 'Casovara', version: 1, project });
+      }
+      if (structured?.analysis && typeof structured.analysis === 'object') analysis = structured.analysis;
+      if (project) {
+        render();
+        showStatus('');
+      }
+    }
+
+    function measure() {
+      if (!bridgeReady || teardown) return;
+      const width = Math.round(document.documentElement.clientWidth);
+      const height = Math.ceil(ui.preview.getBoundingClientRect().bottom + parseFloat(getComputedStyle(document.body).paddingBottom));
+      if (lastSize?.height === height && lastSize.width === width) return;
+      lastSize = { width, height };
+      notify('ui/notifications/size-changed', lastSize);
+    }
+
+    window.addEventListener('message', (event) => {
+      if (event.source !== host || teardown || (!bridgeReady && !pending.size) ||
+          (parentOrigin !== '*' && event.origin !== parentOrigin) || event.data?.jsonrpc !== '2.0') return;
+      const { id, method, params, result, error } = event.data;
+      if (!method && pending.has(id)) {
+        const task = pending.get(id);
+        pending.delete(id);
+        clearTimeout(task.timer);
+        if (!bridgeReady && !error && event.origin !== 'null') parentOrigin = event.origin;
+        if (error) task.reject(new Error(String(error.message || strings().unsupported)));
+        else task.resolve(result);
+      } else if (bridgeReady && method === 'ui/notifications/tool-result') {
+        acceptResult(params);
+      } else if (bridgeReady && method === 'ui/notifications/host-context-changed') {
+        setHostContext(params);
+      } else if (bridgeReady && method === 'ui/resource-teardown' && (typeof id === 'number' || typeof id === 'string')) {
+        teardown = true;
+        observer?.disconnect();
+        for (const task of pending.values()) {
+          clearTimeout(task.timer);
+          task.reject(new Error('The host closed the view.'));
+        }
+        pending.clear();
+        host.postMessage({ jsonrpc: '2.0', id, result: {} }, parentOrigin);
+      } else if (bridgeReady && method === 'ping' && (typeof id === 'number' || typeof id === 'string')) {
+        host.postMessage({ jsonrpc: '2.0', id, result: {} }, parentOrigin);
+      }
+    });
+
+    ui.levels.addEventListener('change', () => render());
+    ui.download.addEventListener('click', () => {
+      if (!project) return;
+      const url = URL.createObjectURL(new Blob([ui.raw.value], { type: 'application/json' }));
+      const link = document.createElement('a');
+      const slug = project.name.normalize('NFKD').replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-+|-+$/g, '').toLowerCase();
+      link.href = url;
+      link.download = `${slug || 'projeto-casovara'}.casovara`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      showStatus(strings().export);
+    });
+    ui.inspect.addEventListener('click', async () => {
+      if (!project) return;
+      ui.inspect.disabled = true;
+      showStatus(strings().checking);
+      try {
+        const activeProject = project;
+        const result = await request('tools/call', { name: 'casovara_inspect_plan', arguments: { project: activeProject } });
+        if (project === activeProject && !teardown) acceptResult(result);
+      } catch {
+        if (!teardown) showStatus(strings().unsupported);
+      } finally {
+        ui.inspect.disabled = false;
+      }
+    });
+
+    async function connect() {
+      setHostContext();
+      if (host === window) {
+        showStatus(strings().connect);
+        return;
+      }
+      try {
+        const result = await request('ui/initialize', {
+          appInfo: { name: appName, version: '1.0.0' }, appCapabilities: {}, protocolVersion: protocol,
+        });
+        if (result?.protocolVersion !== protocol) throw new Error('Unsupported MCP Apps protocol.');
+        bridgeReady = true;
+        serverTools = Boolean(result.hostCapabilities?.serverTools);
+        setHostContext(result.hostContext);
+        notify('ui/notifications/initialized');
+        observer = new ResizeObserver(measure);
+        observer.observe(ui.preview);
+        measure();
+      } catch {
+        showStatus(strings().connect);
+      }
+    }
+
+    connect();
+  </script>
+</body>
+</html>

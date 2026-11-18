@@ -2,6 +2,7 @@
 @import url('./technical-plan.css');
 @import url('./wall-inspector.css');
 @import url('./simulator-controls.css');
+@import url('./builder-assistant.css');
 
 .cv-studio {
   --studio-paper: #faf8f2;

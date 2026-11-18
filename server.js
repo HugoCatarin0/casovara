@@ -6,6 +6,8 @@ import { dirname, extname, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { detectLocale, languagePreferences, locales } from './public/locales.js';
 import { systemById } from './public/core.js';
+import { createDesignAssistant } from './design-assistant.js';
+import { handleMcp } from './mcp-app.js';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicDir = resolve(root, 'public');
@@ -219,7 +221,7 @@ async function staticResponse(req, res, pathname) {
   return true;
 }
 
-export function createApp({ storagePath = process.env.CASOVARA_DATA_DIR || defaultData } = {}) {
+export function createApp({ storagePath = process.env.CASOVARA_DATA_DIR || defaultData, assistant = createDesignAssistant() } = {}) {
   const writes = new Map();
   const sharesDir = resolve(storagePath, '_shares');
   const sharePath = (token) => resolve(sharesDir, token + '.json');
@@ -342,8 +344,26 @@ export function createApp({ storagePath = process.env.CASOVARA_DATA_DIR || defau
       const cookie = cookies(req.headers.cookie);
       const isRead = req.method === 'GET' || req.method === 'HEAD';
 
+      if (url === '/mcp') return await handleMcp(req, res);
+
       if (url.startsWith('/api/')) {
         if (!isRead && ['same-site', 'cross-site'].includes(req.headers['sec-fetch-site'])) throw new RequestError(403, 'cross_site');
+        if (url === '/api/assistant') {
+          if (req.method === 'GET') return sendJson(res, 200, assistant.status(req));
+          if (req.method !== 'POST') throw new RequestError(405, 'method_not_allowed');
+          const payload = await bodyJson(req);
+          if (payload.preset === undefined && payload.project != null) payload.project = validateProject(payload.project);
+          const activity = new AbortController();
+          const disconnect = () => activity.abort();
+          res.once('close', disconnect);
+          try {
+            const result = await assistant.run(req, payload, { signal: activity.signal });
+            if (!res.destroyed) return sendJson(res, 200, result);
+            return;
+          } finally {
+            res.off('close', disconnect);
+          }
+        }
         if (url === '/api/locale' && req.method === 'POST') {
           const { locale } = await bodyJson(req);
           if (!locales.includes(locale) && locale !== 'auto') throw new RequestError(422, 'invalid_locale');
@@ -376,7 +396,7 @@ export function createApp({ storagePath = process.env.CASOVARA_DATA_DIR || defau
     } catch (error) {
       const status = error.status || (error instanceof URIError ? 400 : 500);
       if (status === 500) console.error(error);
-      if (!res.headersSent) sendJson(res, status, { error: error.status ? error.message : 'request_failed' });
+      if (!res.headersSent && !res.destroyed) sendJson(res, status, { error: error.status ? error.message : 'request_failed' });
       else res.end();
     }
   });

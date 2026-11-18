@@ -1,5 +1,7 @@
 import { openBuilderReport } from './builder-report.js';
 import { openBuilderShare } from './builder-share.js';
+import { mountBuilderAssistant } from './builder-assistant.js';
+import { registerBuilderTools } from './builder-webmcp.js';
 import { estimateProject, formatMoney, formatNumber, projectApi, systems } from './core.js';
 import { makeTemplate, templates } from './templates.js';
 import { applyWallAssembly, effectiveWallHeight, getWallSpec, normalizeOpening, normalizeWallSpec, wallAssemblies, wallSpecThickness } from './wall-spec.js';
@@ -15,6 +17,7 @@ import {
 } from './builder-engine.js';
 
 const icons = {
+  assistant: '<path d="M10 3.5 11.9 9l5.6 2-5.6 2-1.9 5.5-2-5.5L2.5 11 8 9Zm8 .5 1 2.7L22 8l-3 .9-1 3-1-3L14 8l3-1.3Zm.5 13 .6 1.6 1.4.6-1.4.5-.6 1.8-.6-1.8-1.4-.5 1.4-.6Z"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   folder: '<path d="M3 7c0-1 .8-2 2-2h5l2 2h7c1 0 2 .9 2 2v9H3Z"/>',
@@ -63,6 +66,7 @@ icons.dock = '<rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M14.
 icons.sun = '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.5 1.5m10.4 10.4 1.5 1.5m0-13.4-1.5 1.5M6.8 17.2l-1.5 1.5"/>';
 const icon = (name, size = 19) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.65" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.room}</svg>`;
 const labels = {
+  assistant: ['Assistente IA', 'AI assistant'],
   commands: ['Pesquisar no projeto', 'Search project'], commandPlaceholder: ['Pesquise uma ferramenta, divisão ou vão', 'Search tools, rooms, or openings'], commandEmpty: ['Nenhum resultado.', 'No matching results.'], guides: ['Guias de construção', 'Construction guides'], calculators: ['Calculadoras', 'Calculators'],
   commandTools: ['Ferramentas', 'Tools'], commandEntities: ['Elementos do projeto', 'Project elements'],
   back: ['Início', 'Home'], builder: ['Estúdio de projeto', 'Design studio'], projects: ['Projetos', 'Projects'], project: ['Projeto', 'Project'], name: ['Nome do projeto', 'Project name'],
@@ -287,6 +291,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       </div>
       <div class="cv-top-actions">
         <button class="cv-tool cv-search-trigger" type="button" data-action="commands" aria-label="${tr('commands')}" title="${tr('commands')}">${icon('search', 16)}<span>${tr('commands')}</span><kbd>⌘/Ctrl K</kbd></button>
+        ${toolbarButton('assistant', 'assistant', 'assistant', 'aria-haspopup="dialog"', true)}
         ${toolbarButton('help', 'info', 'help')}
         ${toolbarButton('export', 'export', 'export', '', true)}
         <button class="cv-button cv-primary" data-action="save" type="button" aria-label="${tr('save')}">${icon('save', 17)}<span>${tr('save')}</span></button>
@@ -378,6 +383,25 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   const dialog = root.querySelector('[data-role="dialog"]');
   const studioPanel = root.querySelector('[data-role="inspector"]');
   const view = root.querySelector('[data-role="view"]');
+  const assistant = mountBuilderAssistant(root, {
+    locale,
+    getProject: () => project,
+    applyProject(next, { baseProject } = {}) {
+      if (!Array.isArray(next?.levels) || !next.levels.length) return false;
+      if (baseProject && JSON.stringify(baseProject) !== JSON.stringify(project)) return false;
+      const candidate = clean(next);
+      change(() => {
+        project = candidate;
+        selected = pendingPoint = hoverPoint = drag = null;
+        tool = 'select';
+        category = 'structure';
+        if (viewMode === 'view3d') viewMode = 'split';
+        resetCamera();
+        viewer.fit();
+      });
+      return true;
+    },
+  });
   const bearings = isPt ? ['S', 'SE', 'E', 'NE', 'N', 'NO', 'O', 'SO'] : ['S', 'SE', 'E', 'NE', 'N', 'NW', 'W', 'SW'];
   const viewer = createModelViewer({
     canvas: model, signal: controller.signal, scene: currentModelScene,
@@ -1088,6 +1112,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     return `<div class="cv-modal-menu">${actions.map(([action, glyph, key]) => toolbarButton(action, glyph, key, '', true)).join('')}</div>`;
   }
   const commands = [
+    ['assistant', 'assistant', 'assistant'],
     ['projects', 'folder', 'projects'], ['new', 'plus', 'new'], ['import', 'upload', 'import'], ['save', 'save', 'save'],
     ['tool:select', 'select', 'select'], ['tool:pan', 'pan', 'pan'], ['tool:wall', 'wall', 'wall'], ['tool:angled', 'angled', 'angled'],
     ['tool:room', 'room', 'room'], ['tool:detect', 'fit', 'detectRoom'], ['tool:divide', 'room', 'splitUpdate'], ['tool:door', 'door', 'door'], ['tool:window', 'window', 'window'], ['catalog', 'furnish', 'furnish'],
@@ -1814,6 +1839,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         break;
       }
       case 'toggle-tools': toolbarOpen = !toolbarOpen; updateTools(); break;
+      case 'assistant': assistant.open(); break;
       case 'simulator':
         setSimulatorOpen(simulatorPanel.hidden);
         if (simulatorPanel.hidden) simulatorToggle.focus({ preventScroll: true });
@@ -2342,6 +2368,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   viewer.set(initialModelCamera);
   status('draft');
   render();
+  registerBuilderTools({ locale, getProject: () => project, stage: assistant.stage, signal: controller.signal });
   if (token && !shared) toast('invalidShare');
   void updateProjectList().then(() => {
     if (!starter && !requestedSystem && revision === 0 && !projectId && projectList.length) {
@@ -2352,6 +2379,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   });
   return () => {
     controller.abort();
+    assistant.dispose();
     resize.disconnect();
     viewer.dispose();
     cancelAnimationFrame(planFrame);
