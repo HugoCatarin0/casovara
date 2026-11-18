@@ -10,6 +10,10 @@ const floorName = [
 
 const roomTypes = { bathroom: 'bath', hall: 'circulation', office: 'living' };
 const officeName = label('Escritório', 'Office');
+const modelRoofs = {
+  patio: ['flat', 10], costa: ['gable', 24], pinhal: ['gable', 29],
+  serra: ['gable', 32], olival: ['hipped', 26], urbano: ['flat', 10],
+};
 
 function makeLevel(outline, index, { roomHeight, wallThickness }) {
   const rooms = outline.map(([type, x, y, w, h], i) => ({
@@ -113,6 +117,8 @@ function furnish({ type, x, y, w, h, name }) {
 
 function template(id, name, description, systemId, outlines) {
   const levels = outlines.map((outline, i) => makeLevel(outline, i, systemById(systemId).defaults));
+  const [roof, pitch] = modelRoofs[id];
+  Object.assign(levels.at(-1), { roof, pitch });
   const area = levels.reduce((total, floor) => total + floor.rooms.reduce((sum, room) => sum + room.w * room.h, 0), 0);
   return { id, name, description, systemId, levels, area };
 }

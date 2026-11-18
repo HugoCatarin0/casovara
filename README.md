@@ -16,6 +16,8 @@ Com Node.js 22 ou superior, execute `npm start` e abra [http://127.0.0.1:3000](h
 
 A aplicação usa os idiomas do navegador e, quando disponível, o país enviado pelo alojamento. O fuso horário do navegador serve de alternativa para identificar Portugal. A preferência manual fica num cookie. As rotas com prefixos `/pt`, `/en-pt` e `/en` abrem explicitamente a interface em português de Portugal, inglês para Portugal e inglês internacional. A primeira e segunda opções usam a formatação numérica portuguesa. Todas usam unidades métricas e euros.
 
+No editor 2D, clique ou arraste para traçar paredes e use `Enter` ou o botão de conclusão para terminar a cadeia. Pode ajustar a espessura antes de desenhar, mover os vértices e enquadrar a seleção. No 3D, arraste para rodar, use o botão direito ou `Shift` para deslocar e use a roda ou dois dedos para aproximar. Clique num elemento para o selecionar também na planta. Na vista dividida, arraste o separador para redimensionar os dois painéis. O renderizador usa profundidade por píxel com WebGL e uma alternativa por software.
+
 ## Projetos, alojamento e domínios
 
 O planeador guarda cada projeto num ficheiro JSON. Um cookie de sessão associa os ficheiros ao navegador. É possível transferir um projeto para outro navegador através da exportação e importação de ficheiros. O cookie de sessão e o de idioma expiram após um ano. O site público também pode guardar o tema selecionado num cookie.

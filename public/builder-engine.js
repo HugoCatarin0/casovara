@@ -1,3 +1,5 @@
+import { furnitureModel, shade } from './model-furniture.js';
+
 export const roomStyles = {
   living: { fill: '#e4e8d9', floor: '#9fae8a', pt: 'Sala', en: 'Living room' },
   kitchen: { fill: '#ebdfc8', floor: '#cbb488', pt: 'Cozinha', en: 'Kitchen' },
@@ -198,17 +200,16 @@ export function projectArea(project) {
   return project.levels.reduce((total, level) => total + unionArea(level.rooms.filter((room) => room.type !== 'outdoor')), 0);
 }
 
-export function polygons3D(project, levelId, orbit, cutaway) {
-  const visibleLevels = project.levels.slice(0, project.levels.findIndex((level) => level.id === levelId) + 1);
-  const azimuth = orbit * Math.PI / 180;
-  const sin = Math.sin(azimuth);
-  const cos = Math.cos(azimuth);
-  const projection = (x, y, z) => [cos * x - sin * y, (sin * x + cos * y) * 0.49 - z * 0.88, (sin * x + cos * y) * 0.88 + z * 0.49];
+export function modelFaces(project, levelId, cutaway, { scope = 'through', roof: showRoof = true, selected = null, site = false } = {}) {
+  const index = project.levels.findIndex((level) => level.id === levelId);
+  const visibleLevels = scope === 'all' ? project.levels : scope === 'level'
+    ? project.levels.slice(Math.max(0, index), index + 1) : project.levels.slice(0, index + 1);
+  const topLevel = visibleLevels.at(-1);
   const faces = [];
+  let owner = null;
+  const isSelected = () => owner && owner.kind === selected?.kind && owner.id === selected.id && owner.levelId === levelId;
   function face(points, fill, opacity = 1) {
-    const projected = points.map((position) => projection(...position));
-    const depth = projected.reduce((sum, position) => sum + position[2], 0) / projected.length;
-    faces.push({ points: projected, fill, depth, opacity });
+    faces.push({ points, fill, opacity, owner });
   }
   function prism(footprint, base, height, color, opacity = 1) {
     const top = footprint.map(([x, y]) => [x, y, base + height]);
@@ -235,7 +236,20 @@ export function polygons3D(project, levelId, orbit, cutaway) {
     const depth = Math.max(...ys) + 0.28 - y;
     if (width < 0.9 || depth < 0.9) return;
     if (level.roof === 'flat') {
-      prism(rect(x, y, width, depth), base, 0.18, ['#a69786', '#a69b8d', '#c7b9a8']);
+      const colors = ['#b2a390', '#a69b8d', '#c7b9a8'];
+      if (!indoor.length) prism(rect(x, y, width, depth), base, .18, colors);
+      const plates = indoor.map(({ x, y, w, h }) => ({ x1: x - .28, x2: x + w + .28, y1: y - .28, y2: y + h + .28 }));
+      const boundaries = [...new Set(plates.flatMap(({ y1, y2 }) => [y1, y2]))].sort((a, b) => a - b);
+      for (let index = 1; index < boundaries.length; index++) {
+        const top = boundaries[index - 1], bottom = boundaries[index];
+        const intervals = plates.filter(({ y1, y2 }) => y1 < bottom && y2 > top).sort((a, b) => a.x1 - b.x1);
+        let end = -Infinity;
+        for (const { x1, x2 } of intervals) {
+          const start = Math.max(x1, end);
+          if (x2 > start) prism(rect(start, top, x2 - start, bottom - top), base, .18, colors);
+          end = Math.max(end, x2);
+        }
+      }
       return;
     }
     const alongX = width >= depth;
@@ -247,10 +261,30 @@ export function polygons3D(project, levelId, orbit, cutaway) {
     const a = world(0, 0), b = world(length, 0), c = world(length, span), d = world(0, span);
     const left = world(inset, span / 2, ridgeHeight), right = world(length - inset, span / 2, ridgeHeight);
     prism(rect(x, y, width, depth), base - 0.12, 0.12, ['#b38165', '#b87d62', '#a4644e']);
-    face([a, b, right, left], '#af7259');
-    face([c, d, left, right], '#975b48');
-    face([d, a, left], inset ? '#a66853' : '#e2d9c9');
-    face([b, c, right], inset ? '#b47c60' : '#d0c4ae');
+    function slope(start, end, crestStart, crestEnd, color, length) {
+      face([start, end, crestEnd, crestStart], color);
+      const mix = (from, to, t) => from.map((value, axis) => value + (to[axis] - value) * t);
+      const course = (t, u) => {
+        const point = mix(mix(start, crestStart, t), mix(end, crestEnd, t), u);
+        point[2] += .011;
+        return point;
+      };
+      const count = Math.min(28, Math.round(length / .39));
+      for (let row = 1; row < count; row++) {
+        const t = row / count;
+        face([course(t, .005), course(t, .995), course(t + .003, .995), course(t + .003, .005)], shade(color, -17));
+      }
+    }
+    const slopeWidth = Math.hypot(span / 2, ridgeHeight);
+    slope(a, b, left, right, '#af7259', slopeWidth);
+    slope(c, d, right, left, '#975b48', slopeWidth);
+    if (inset) {
+      slope(d, a, left, left, '#a66853', slopeWidth);
+      slope(b, c, right, right, '#b47c60', slopeWidth);
+    } else {
+      face([d, a, left], '#e2d9c9');
+      face([b, c, right], '#d0c4ae');
+    }
   }
 
   function offsetFootprint(wall, from, to, thickness = wall.thickness) {
@@ -263,9 +297,43 @@ export function polygons3D(project, levelId, orbit, cutaway) {
     const y2 = wall.y1 + dy * to;
     return [[x1 - dy * factor, y1 + dx * factor], [x2 - dy * factor, y2 + dx * factor], [x2 + dy * factor, y2 - dx * factor], [x1 + dy * factor, y1 - dx * factor]];
   }
+  function openingDetails(wall, opening, a, base, height) {
+    const { b, top, sill, glass, type } = opening;
+    const upper = Math.min(top, height);
+    if (upper - sill < 0.015) return;
+    const jamb = Math.min(.045 / wallLength(wall), (b - a) * .18);
+    const frame = isSelected() ? ['#cd9c70', '#a77550', '#b78861']
+      : glass ? ['#a2aba2', '#86928b', '#788980'] : ['#b49d80', '#9d876f', '#8a745d'];
+    const inset = wall.thickness * .68;
+    prism(offsetFootprint(wall, a, a + jamb, inset), base + sill, upper - sill, frame);
+    prism(offsetFootprint(wall, b - jamb, b, inset), base + sill, upper - sill, frame);
+    if (height >= top) prism(offsetFootprint(wall, a, b, inset), base + top - .045, .045, frame);
+    if (glass) {
+      const bed = sill + .032;
+      const head = Math.max(bed, upper - (height >= top ? .045 : 0));
+      const position = (fraction, z) => [wall.x1 + (wall.x2 - wall.x1) * fraction, wall.y1 + (wall.y2 - wall.y1) * fraction, base + z];
+      prism(offsetFootprint(wall, a, b, inset), base + sill, upper - sill < .04 ? .01 : .032, frame);
+      if (head > bed) {
+        face([position(a + jamb, bed), position(b - jamb, bed), position(b - jamb, head), position(a + jamb, head)], '#8abebc', .42);
+        if (type === 'slidingWindow') {
+          const mid = (a + b) / 2;
+          prism(offsetFootprint(wall, mid - jamb / 2, mid + jamb / 2, inset * .8), base + bed, head - bed, frame);
+        }
+      }
+    } else if (height >= top) {
+      // A full-height view shows the door leaf. Sectioned walls leave the passage open.
+      const door = ['#b48762', '#a77a58', '#956647'];
+      const lower = base + .026;
+      if (type === 'doubleDoor') {
+        const mid = (a + b) / 2;
+        prism(offsetFootprint(wall, a + jamb, mid - jamb * .17, .048), lower, top - .085, door);
+        prism(offsetFootprint(wall, mid + jamb * .17, b - jamb, .048), lower, top - .085, door);
+      } else prism(offsetFootprint(wall, a + jamb, b - jamb, .048), lower, top - .085, door);
+    }
+  }
   let floorZ = 0;
   for (const level of visibleLevels) {
-    const wallHeight = cutaway && level.id === levelId ? Math.min(level.height, 1.12) : level.height;
+    const wallHeight = cutaway && level === topLevel ? Math.min(level.height, 1.12) : level.height;
     const openings = new Map();
     for (const item of level.items) {
       const type = elements[item.type];
@@ -276,41 +344,31 @@ export function polygons3D(project, levelId, orbit, cutaway) {
           const width = item.width / wallLength(nearest.wall);
           const list = openings.get(nearest.wall.id) ?? [];
           const window = item.type === 'window' || item.type === 'slidingWindow';
-          list.push({ a: nearest.ratio - width / 2, b: nearest.ratio + width / 2, sill: window && item.type !== 'slidingWindow' ? 0.9 : 0, top: window ? 2.15 : 2.05, glass: window });
+          list.push({ a: nearest.ratio - width / 2, b: nearest.ratio + width / 2, sill: window && item.type !== 'slidingWindow' ? 0.9 : 0,
+            top: window ? 2.15 : 2.05, glass: window, type: item.type, id: item.id });
           openings.set(nearest.wall.id, list);
         }
         continue;
       }
-      const angle = item.angle * Math.PI / 180;
-      const shape = (x, y, width, depth) => rect(x, y, width, depth)
-        .map(([u, v]) => [item.x + u * Math.cos(angle) - v * Math.sin(angle), item.y + u * Math.sin(angle) + v * Math.cos(angle)]);
-      const colors = [type.color, shade(type.color, -16), shade(type.color, -29)];
-      if (item.type === 'stair') {
-        const count = Math.ceil(level.height / 0.19);
-        const tread = item.depth / count;
-        for (let index = 0; index < count; index++) {
-          prism(shape(-item.width / 2, -item.depth / 2 + index * tread, item.width, tread), floorZ,
-            level.height * (count - index) / count, colors);
-        }
-      } else if (item.type === 'rail') {
-        const postSize = Math.min(item.depth, item.width / 10, 0.08);
-        const postCount = Math.min(20, Math.ceil(item.width / 0.75) + 1);
-        for (let index = 0; index < postCount; index++) {
-          const x = -item.width / 2 + index * (item.width - postSize) / (postCount - 1);
-          prism(shape(x, -postSize / 2, postSize, postSize), floorZ, type.height, colors);
-        }
-        prism(shape(-item.width / 2, -item.depth / 2, item.width, item.depth), floorZ + type.height, 0.055, colors);
-      } else prism(shape(-item.width / 2, -item.depth / 2, item.width, item.depth), floorZ, type.height, colors);
+      owner = { kind: 'items', id: item.id, levelId: level.id };
+      const material = isSelected() ? { ...type, color: '#b67d4a' } : type;
+      furnitureModel(item, material, level.height, floorZ, prism, face);
     }
     for (const room of level.rooms) {
-      const color = finishes[room.finish] ?? (roomStyles[room.type] ?? roomStyles.living).floor;
+      owner = { kind: 'rooms', id: room.id, levelId: level.id };
+      const color = isSelected() ? '#d3a77b' : finishes[room.finish] ?? (roomStyles[room.type] ?? roomStyles.living).floor;
       prism(rect(room.x, room.y, room.w, room.h), floorZ - 0.17, 0.17, [color, '#958977', '#817764']);
-      if (level.id === levelId && !cutaway && level.ceiling && room.type !== 'outdoor') {
+      if (!cutaway && showRoof && level === topLevel && level.ceiling && room.type !== 'outdoor') {
+        owner = null;
         prism(rect(room.x, room.y, room.w, room.h), floorZ + level.height - 0.06, 0.06, ['#edebdf', '#dcd7c9', '#d3ccbd']);
       }
     }
     for (const wall of level.walls) {
-      const colors = ['#f0e9da', '#d0c4ae', '#e2d9c9'];
+      if (wallLength(wall) < .001) continue;
+      const wallOwner = { kind: 'walls', id: wall.id, levelId: level.id };
+      owner = wallOwner;
+      const colors = isSelected() ? ['#ddb38e', '#bc916d', '#c79c77']
+        : cutaway && level === topLevel ? ['#eee3d2', '#cbbfa8', '#dfd6c3'] : ['#f0e9da', '#d0c4ae', '#e2d9c9'];
       let last = 0;
       for (const opening of (openings.get(wall.id) ?? []).sort((a, b) => a.a - b.a)) {
         const a = Math.max(last, opening.a);
@@ -318,17 +376,42 @@ export function polygons3D(project, levelId, orbit, cutaway) {
         if (a > last) prism(offsetFootprint(wall, last, a), floorZ, wallHeight, colors);
         if (opening.sill > 0) prism(offsetFootprint(wall, a, opening.b), floorZ, Math.min(opening.sill, wallHeight), colors);
         if (opening.top < wallHeight) prism(offsetFootprint(wall, a, opening.b), floorZ + opening.top, wallHeight - opening.top, colors);
-        if (opening.glass && wallHeight > opening.sill) prism(offsetFootprint(wall, a, opening.b, 0.02), floorZ + opening.sill, Math.min(wallHeight, opening.top) - opening.sill, ['#a4bfba', '#91aaa6', '#77958f'], 0.58);
+        owner = { kind: 'items', id: opening.id, levelId: level.id };
+        openingDetails(wall, opening, a, floorZ, wallHeight);
+        owner = wallOwner;
         last = opening.b;
       }
       if (last < 1) prism(offsetFootprint(wall, last, 1), floorZ, wallHeight, colors);
     }
     floorZ += level.height;
-    if (level.id === levelId && !cutaway && ['flat', 'gable', 'hipped'].includes(level.roof)) roof(level, floorZ);
+    owner = null;
+    if (level === topLevel && !cutaway && showRoof && ['flat', 'gable', 'hipped'].includes(level.roof)) roof(level, floorZ);
   }
-  return faces.sort((a, b) => a.depth - b.depth);
-}
-
-function shade(color, delta) {
-  return `#${[1, 3, 5].map((index) => clamp(Number.parseInt(color.slice(index, index + 2), 16) + delta, 0, 255).toString(16).padStart(2, '0')).join('')}`;
+  if (site && !cutaway && scope !== 'level' && faces.length) {
+    const pad = 1.05;
+    const ground = -.19;
+    const shadowColor = '#53563f';
+    const exposed = faces.filter(({ owner }) => !owner || owner.kind === 'walls');
+    let left = Infinity, right = -Infinity, front = Infinity, back = -Infinity;
+    for (const { points } of faces) {
+      for (const [x, y] of points) {
+        left = Math.min(left, x);
+        right = Math.max(right, x);
+        front = Math.min(front, y);
+        back = Math.max(back, y);
+      }
+    }
+    const shift = Math.min(2.65, floorZ * .31);
+    const perimeter = rect(left - pad, front - pad - shift, right - left + 2 * pad + shift, back - front + 2 * pad + shift);
+    prism(perimeter, ground - .22, .22, ['#c3c7ab', '#aaae92', '#a3a88c']);
+    for (const { points } of exposed) {
+      if (points.every((point) => point[2] <= ground)) continue;
+      const shadow = points.map(([x, y, z]) => {
+        const offset = Math.min(shift + .12, (z - ground) * .31);
+        return [x + offset, y - offset * .76, ground + .005];
+      });
+      face(shadow, shadowColor, .22);
+    }
+  }
+  return faces;
 }

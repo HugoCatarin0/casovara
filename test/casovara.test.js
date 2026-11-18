@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { estimateProject, formatMoney, formatNumber, systems } from '../public/core.js';
-import { makeItem, polygons3D } from '../public/builder-engine.js';
+import { makeItem, modelFaces } from '../public/builder-engine.js';
 import { detectLocale, languagePreferences } from '../public/locales.js';
 import { makeTemplate, templates } from '../public/templates.js';
 import { createApp } from '../server.js';
@@ -52,7 +52,7 @@ test('Starter plans are isolated copies and contain levels in the selected langu
 test('Roof type, pitch, floor finishes and ceilings alter the 3D model', () => {
   const project = makeTemplate('patio', 'pt-PT');
   const level = project.levels[0];
-  const full = () => polygons3D(project, level.id, -38, false);
+  const full = () => modelFaces(project, level.id, false);
   const before = full();
   level.rooms[0].finish = 'ceramic';
   assert.ok(full().some((face) => face.fill === '#e4dccc'));
@@ -65,7 +65,7 @@ test('Roof type, pitch, floor finishes and ceilings alter the 3D model', () => {
   assert.notDeepEqual(full(), gable);
   level.roof = 'hipped';
   assert.ok(full().some((face) => face.fill === '#a66853'));
-  assert.ok(polygons3D(project, level.id, -38, true).every((face) => face.fill !== '#a66853'));
+  assert.ok(modelFaces(project, level.id, true).every((face) => face.fill !== '#a66853'));
   const withoutStairs = full().length;
   level.items.push(makeItem('stair', 2, 2), makeItem('rail', 4, 2));
   assert.ok(full().length > withoutStairs + 10);

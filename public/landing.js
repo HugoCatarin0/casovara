@@ -1,6 +1,7 @@
-import { elements, polygons3D, roomStyles } from './builder-engine.js';
+import { elements, modelFaces, roomStyles } from './builder-engine.js';
 import { company, estimateProject, formatMoney, formatNumber, systems } from './core.js';
 import { makeTemplate, templates } from './templates.js';
+import { compileScene, createModelRenderer } from './model-renderer.js';
 
 const pt = {
   workflow: 'Como funciona',
@@ -466,18 +467,6 @@ export function renderLanding(root, { locale, homeUrl = '/', appUrl = '/app', se
   showProject();
 }
 
-function paintPolygon(ctx, points, color, stroke) {
-  ctx.beginPath();
-  points.forEach(([x, y], index) => index ? ctx.lineTo(x, y) : ctx.moveTo(x, y));
-  ctx.closePath();
-  ctx.fillStyle = color;
-  ctx.fill();
-  if (stroke) {
-    ctx.strokeStyle = stroke;
-    ctx.stroke();
-  }
-}
-
 function drawTemplate(canvas, project, floor, view, locale) {
   const ctx = canvas.getContext('2d');
   const level = project.levels[floor];
@@ -599,20 +588,9 @@ function dimensionLine(ctx, x1, y1, x2, y2, breakAt, gap) {
 }
 
 function drawModel(ctx, width, height, project, levelId) {
-  const faces = polygons3D(project, levelId, 36, true);
-  const points = faces.flatMap(face => face.points);
-  const minX = Math.min(...points.map(point => point[0]));
-  const maxX = Math.max(...points.map(point => point[0]));
-  const minY = Math.min(...points.map(point => point[1]));
-  const maxY = Math.max(...points.map(point => point[1]));
-  const scale = Math.min((width - 120) / (maxX - minX), (height - 104) / (maxY - minY));
-  const x = (width - (maxX - minX) * scale) / 2;
-  const y = (height - (maxY - minY) * scale) / 2;
-  const pixel = ([px, py]) => [x + (px - minX) * scale, y + (py - minY) * scale];
-  ctx.lineWidth = 0.9;
-  for (const face of faces) {
-    ctx.globalAlpha = face.opacity;
-    paintPolygon(ctx, face.points.map(pixel), face.fill, '#918674');
-  }
-  ctx.globalAlpha = 1;
+  const image = document.createElement('canvas');
+  const renderer = createModelRenderer(image, { preferSoftware: true });
+  const scene = compileScene(modelFaces(project, levelId, true));
+  renderer.paint(scene, { azimuth: 36, elevation: 35, zoom: 1.28, projection: 'orthographic' }, width, height);
+  ctx.drawImage(image, 0, 0);
 }
