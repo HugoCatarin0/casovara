@@ -1,7 +1,9 @@
 import { elements, findWall, projectArea, roomStyles, wallLength } from './builder-engine.js';
 import { estimateProject, systemById, systems } from './core.js';
 import { normalizeObjectCatalogRef } from './object-catalog.js';
-import { applyServiceOperations, generateServices, inspectServices, normalizeBuildingServices, serviceLimits, serviceSystems } from './building-services.js';
+import {
+  applyServiceOperations, generateServices, inspectServices, normalizeBuildingServices, serviceLimits, serviceMounts, servicePhases, serviceSystems,
+} from './building-services.js';
 import { applyConstructionOperations, constructionLimits, normalizeConstructionSchedule, scheduleConstruction, validateConstructionSchedule } from './construction-schedule.js';
 import { generateConstructionPlan } from './construction-tasks.js';
 import {
@@ -24,6 +26,8 @@ const choice = (values) => ({ type: 'string', enum: values });
 const label = { type: 'string', minLength: 1, maxLength: 95 };
 const id = { type: 'string', pattern: '^[a-zA-Z0-9_-]{1,90}$' };
 const flag = { type: 'boolean' };
+const integer = (minimum, maximum, description) => ({ type: 'integer', minimum, maximum, description });
+const nullable = (schema) => ({ ...schema, type: [schema.type, 'null'] });
 const position = decimal(-500, 500, 'Position in metres.');
 const axis = { x: position, y: position };
 const angle = decimal(-360, 360, 'Rotation in degrees.');
@@ -98,14 +102,26 @@ const serviceKind = choice([...new Set(Object.values(serviceSystems).flatMap(({ 
 const serviceMedium = choice([...new Set(Object.values(serviceSystems).flatMap(({ media }) => Object.keys(media)))]);
 const servicePosition = decimal(-serviceLimits.coordinate, serviceLimits.coordinate, 'Position in metres.');
 const serviceAxis = { x: servicePosition, y: servicePosition };
-const serviceNode = { kind: serviceKind, ...serviceAxis, label, roomId: id };
+const servicePhase = { ...choice(servicePhases), description: 'Electrical supply entry only. Use single for single-phase or three for three-phase.' };
+const serviceWall = object({
+  wallId: id,
+  fraction: decimal(0, 1, 'Proportional position along the wall, measured from its first endpoint.'),
+  side: { type: 'integer', enum: [-1, 1], description: 'Choose the face toward the served room. Positive follows the plan normal (-dy, dx). Negative is the opposite face.' },
+}, ['wallId', 'fraction', 'side']);
+const serviceNode = {
+  kind: serviceKind, ...serviceAxis, label, roomId: id,
+  mount: { ...choice(serviceMounts), description: 'Mounting surface. Provide a wall anchor for wall, or plan coordinates for floor, ceiling or free.' },
+  wall: serviceWall,
+  count: integer(1, serviceLimits.count, 'Number of electrical outlets in this group, for outlet or dedicatedOutlet.'),
+  phase: servicePhase,
+};
 const serviceRun = {
   medium: serviceMedium, from: id, to: id,
   points: { ...list(object(serviceAxis, ['x', 'y']), 0, serviceLimits.points), description: 'Intermediate route vertices in metres, excluding the two node positions.' },
   label,
 };
 const serviceChanges = [
-  operation('add_node', { node: object({ id, ...serviceNode }, ['kind', 'x', 'y']) }, ['node']),
+  operation('add_node', { node: object({ id, ...serviceNode }, ['kind']) }, ['node']),
   operation('update_node', { id, node: object(serviceNode) }, ['id', 'node']),
   operation('delete_node', { id }, ['id']),
   operation('add_run', { run: object({ id, ...serviceRun }, ['medium', 'from', 'to']) }, ['run']),
@@ -118,13 +134,12 @@ const serviceEdits = [
     systems: list(serviceSystem, 1, 5),
     levelIds: { ...list(id, 1, 20), description: 'Storeys to generate on. Omit to process all storeys.' },
     replace: { ...flag, description: 'Replace existing schemes only when expressly requested. Defaults to preserving existing schemes.' },
+    phase: { ...servicePhase, description: 'Phase for the main electrical supply entry. Defaults to the current phase when replacing an existing scheme, or single for a new scheme.' },
   }, ['systems']),
   operation('edit', { system: serviceSystem, levelId: id, changes: list({ oneOf: serviceChanges }, 1, serviceLimits.operations) }, ['system', 'changes']),
 ];
 
 const scheduleDate = { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Portugal civil date in YYYY-MM-DD format.' };
-const integer = (minimum, maximum, description) => ({ type: 'integer', minimum, maximum, description });
-const nullable = (schema) => ({ ...schema, type: [schema.type, 'null'] });
 const scheduleLabel = { ...label, maxLength: constructionLimits.label };
 const scheduleLink = object({ id, lag: integer(0, constructionLimits.lagDays, 'Whole workdays between a predecessor finishing and this task being released.') }, ['id']);
 const scheduleChanges = [
@@ -164,7 +179,7 @@ export const designTools = Object.freeze([
   },
   {
     name: 'casovara_design_services', title: 'Design building services',
-    description: 'Generate or edit schematic electrical, plumbing (cold, hot and drains), VMC ventilation, air conditioning and radiant-floor networks. Use exact node, run and storey ids to adjust terminals and routes. Returns an editable proposal for review.',
+    description: 'Generate or edit schematic electrical, plumbing, VMC, air conditioning and radiant-floor networks. Adjust wall face, mounting surface, outlet groups, supply phase and routes with exact ids. Returns an editable proposal for review.',
     inputSchema: object({ project: projectInput, operations: list({ oneOf: serviceEdits }, 1, 40) }, ['operations']),
   },
   {
@@ -184,6 +199,8 @@ Use Casovara to draw editable house plans. Work in metres with x and y as plan a
 - Use \`casovara_inspect_plan\` before editing. It returns stable level, room, wall and item ids and practical layout warnings. Check hall access, vertical circulation, and dimensions. Its area is the union of room rectangles excluding outdoors. Material costs are illustrative.
 - Use \`casovara_edit_plan\` for atomic changes. Each operation can target a \`levelId\`; omit it to use the active storey. Use exact ids and supply opening \`wallId\` plus an \`offset\` in metres from that wall's first endpoint to the opening centre. A door or window must fit within its wall in both dimensions. If walls were created independently of a room, include explicit wall edits when moving a room boundary. Evaluate the warnings after every edit.
 - Use \`casovara_design_services\` to generate or adjust building services. The supported systems are ${serviceIds.map((id) => `\`${id}\``).join(', ')}. Specify radiant floor only if the user asks for it or confirms it for relevant rooms. A schematic generation preserves existing work unless the user requests replacement. Use an \`edit\` operation with the exact system and storey ids and a batch of node or run changes. Each run joins two nodes in the same system and takes optional intermediate points, omitting its endpoints. A storey schematic leaves connections between storeys for coordination. These tools do not determine loads, sizes, slopes, equipment ratings or regulatory compliance.
+- For wall-mounted fixtures, use \`mount: "wall"\` and \`wall: {wallId, fraction, side}\`. The fraction runs from the wall's first endpoint (0) to its second (1). Side 1 follows the normal (-dy, dx) in plan coordinates and side -1 faces the other way. Choose the served room's side and avoid openings. The wall anchor supplies x and y. Use \`floor\`, \`ceiling\` or \`free\` and x, y for other positions. Generated light points use the ceiling. A wall switch, board or socket normally faces its room. Apply the same mounting convention to fixtures in the other systems.
+- A group of three sockets is one \`outlet\` node with \`count: 3\`, shown as T 3×. A generated electrical \`supplyEntry\` joins the ground floor's board through \`serviceFeed\`. Request \`phase: "three"\` at generation, or update the entry node's phase to \`three\` or \`single\`. The generated phase defaults to \`single\` when unspecified and is a planning assumption. The ground floor plumbing proposes a cold-water entry and wastewater outlet. Coordinate exterior terminals and floor-to-floor connections against the project.
 - Building services media and compatible node kinds per system: ${Object.entries(serviceSystems).map(([id, { kinds, media }]) => `${id}: nodes ${Object.keys(kinds).join(', ')}; media ${Object.keys(media).join(', ')}`).join(' | ')}.
 - Use \`casovara_plan_construction\` to generate or revise the construction programme. Dates use \`YYYY-MM-DD\`; durations, lags and crew capacity refer to working days. A zero-day task is a milestone. A predecessor must finish and its lag elapse before its successor can start. For a change, inspect the task and crew ids and preserve all known dependencies and release gates. To remove a referenced task or crew, update every dependent task in the same edit. Keep approvals, curing, safety, procurement and work-area compatibility explicit. Compare the selected programme against its one-task-at-a-time baseline, and explain any limits. Durations are editable planning assumptions and the scheduler searches feasible arrangements without claiming a global minimum.
 - MCP calls work with the returned \`project\` object and do not read a browser's private workspace. Pass that object on each inspect/edit. Download or import the project into the editor to review it. When the planner itself supplies the active project you may omit it.
@@ -839,8 +856,8 @@ function analyse(project, locale) {
     }
     const attachedById = new Map(attachments.map(({ item, wall }) => [item.id, wall]));
     const buildingServices = normalizeBuildingServices(floor.services);
-    const serviceAnalysis = Object.fromEntries(Object.keys(buildingServices ?? {}).map((system) => {
-      const result = inspectServices(floor, system);
+    const serviceAnalysis = Object.fromEntries(Object.keys(buildingServices).map((system) => {
+      const result = inspectServices(floor, system, { includeEntry: index === 0 });
       for (const warning of result.warnings) {
         if (warnings.length < 60) warnings.push({ code: warning.code, levelId: floor.id, system,
           entityId: warning.nodeId ?? warning.runId, message: pt ? warning.pt : warning.en });
@@ -908,7 +925,7 @@ function editServices(project, operations) {
       const floor = project.levels.find(({ id }) => id === (operation.levelId ?? project.levelId));
       if (!floor) throw new Error('The specified storey does not exist.');
       const network = applyServiceOperations(floor, operation.system, operation.changes);
-      const services = { ...normalizeBuildingServices(floor.services), [operation.system]: network };
+      const services = { ...normalizeBuildingServices(floor.services, floor), [operation.system]: network };
       if (!network.nodes.length && !network.runs.length) delete services[operation.system];
       if (Object.keys(services).length) floor.services = services;
       else delete floor.services;
@@ -921,7 +938,7 @@ function editServices(project, operations) {
       return chosen;
     }) : project.levels;
     for (const floor of levels) {
-      const services = { ...normalizeBuildingServices(floor.services) };
+      const services = normalizeBuildingServices(floor.services, floor);
       for (const system of new Set(operation.systems)) {
         const existing = services[system];
         if ((existing?.nodes.length || existing?.runs.length) && !operation.replace) {
@@ -932,7 +949,8 @@ function editServices(project, operations) {
           changes.push({ levelId: floor.id, system, result: 'no_indoor_rooms' });
           continue;
         }
-        const network = generateServices(floor, system);
+        const phase = operation.phase ?? existing?.nodes.find(({ kind }) => kind === 'supplyEntry')?.phase;
+        const network = generateServices(floor, system, { includeEntry: floor === project.levels[0], phase });
         if (network.nodes.length || network.runs.length) {
           services[system] = network;
           changes.push({ levelId: floor.id, system, result: 'generated' });
@@ -959,7 +977,7 @@ export function runDesignTool(name, args, { project = null, locale = 'pt-PT' } =
   if (name === 'casovara_inspect_plan') return { analysis: analyse(source, locale) };
   const edited = structuredClone(source);
   for (const floor of edited.levels) {
-    if (Object.hasOwn(floor, 'services')) floor.services = normalizeBuildingServices(floor.services);
+    if (Object.hasOwn(floor, 'services')) floor.services = normalizeBuildingServices(floor.services, floor);
   }
   if (name === 'casovara_design_services') {
     const serviceChanges = editServices(edited, args.operations);
@@ -992,7 +1010,14 @@ export function runDesignTool(name, args, { project = null, locale = 'pt-PT' } =
     else delete edited.constructionPlan;
     return { project: edited, analysis: analyse(edited, locale), constructionChanged: true };
   }
-  for (const edit of args.operations) applyEdit(edited, edit, used);
+  for (const edit of args.operations) {
+    const levelId = edit.levelId ?? edited.levelId;
+    applyEdit(edited, edit, used);
+    if (['update_wall', 'update_room', 'move', 'delete'].includes(edit.op)) {
+      const floor = edited.levels.find(({ id }) => id === levelId);
+      if (floor?.services) floor.services = normalizeBuildingServices(floor.services, floor);
+    }
+  }
   validateSnapshot(edited);
   return { project: edited, analysis: analyse(edited, locale) };
 }

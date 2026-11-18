@@ -6,7 +6,7 @@
 .cv-tool.cv-service-banner:not([hidden]) { color: #1e4664; background: #f5fafe; border-color: #adc6d9; box-shadow: 0 2px 8px #34536a25; }
 .cv-tool.cv-service-banner:hover { background: #dbeaf4; }
 .cv-studio[data-tool=service] [data-role=plan] { cursor: crosshair; }
-.cv-services-overlay [data-service-kind=node] circle[pointer-events=all] { cursor: move; }
+.cv-services-overlay [data-service-kind=node] :is(rect[pointer-events=all], path[pointer-events=stroke]) { cursor: move; }
 .cv-services-overlay [data-service-kind=run] polyline[pointer-events=stroke] { cursor: pointer; }
 .cv-service-header { align-items: center; display: flex; gap: .22rem; padding: .4rem .55rem .4rem .85rem; background: #eaf2f7; color: #244b63; border-bottom: 1px solid #ccdce7; }
 .cv-service-header h2 { flex: 1 1 auto; margin: 0; font-size: 1rem; color: #203d53; }
@@ -16,6 +16,7 @@
 .cv-service-floor { color: #496476; font-size: .72rem; font-weight: 700; }
 .cv-service-section .cv-field { margin: 0; }
 .cv-service-generate { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .4rem; align-items: end; }
+.cv-service-generate-options { display: grid; gap: .4rem; }
 .cv-service-generate .cv-button { min-height: 2.55rem; font-size: .73rem; padding-inline: .5rem; }
 .cv-service-note, .cv-service-hint, .cv-service-message { color: #496476; font-size: .74rem; line-height: 1.38; }
 .cv-service-message { color: #1e4b64; background: #e8f3fa; border-radius: .35rem; padding: .38rem .48rem; }
@@ -33,6 +34,7 @@
 .cv-service-warnings li + li { margin-top: .28rem; }
 .cv-service-detail { display: grid; gap: .52rem; padding-top: .55rem; border-top: 1px solid var(--studio-line); }
 .cv-service-detail h3, .cv-service-detail h4 { margin: 0; color: #2c4c63; font-size: .79rem; }
+.cv-service-detail .cv-field small { color: #496476; font-size: .7rem; font-weight: 500; }
 .cv-service-points { display: grid; justify-items: start; gap: .38rem; }
 .cv-service-point-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto; gap: .35rem; width: 100%; align-items: end; }
 .cv-service-point-row input { width: 100%; min-width: 0; }

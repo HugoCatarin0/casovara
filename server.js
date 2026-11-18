@@ -135,7 +135,7 @@ function validateProject(project) {
   const constructionPlan = normalizeConstructionSchedule(project.constructionPlan);
   if (project.constructionPlan != null && !constructionPlan) throw new RequestError(422, 'invalid_construction_plan');
   return { ...project, name: project.name.trim(), levels: project.levels.map((level) => Object.hasOwn(level, 'services')
-    ? { ...level, services: normalizeBuildingServices(level.services) } : level), ...(constructionPlan ? { constructionPlan } : {}) };
+    ? { ...level, services: normalizeBuildingServices(level.services, level) } : level), ...(constructionPlan ? { constructionPlan } : {}) };
 }
 
 async function readProject(path) {

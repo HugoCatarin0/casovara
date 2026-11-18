@@ -78,6 +78,46 @@ test('Service tool generates chosen schemes on specified floors and adjusts rout
   assert.throws(() => tool([{ op: 'generate', systems: ['plumbing'] }], { ...adjusted.project, levels: [adjusted.project.levels[0]] }), /kept|preserv|match|generated/i);
 });
 
+test('Agents can add grouped outlets to opposite wall faces and set the ground-floor supply phase', () => {
+  const { project } = create({ levels: [
+    { id: 'ground', name: 'Rés do chão', autoOpenings: false, rooms: [
+      { id: 'room-west', type: 'living', x: 0, y: 0, width: 6, depth: 5 },
+      { id: 'room-east', type: 'bedroom', x: 6, y: 0, width: 4, depth: 5 },
+      { id: 'room-bath', type: 'bath', x: 0, y: 5, width: 3, depth: 3 },
+    ] },
+    { id: 'upper', name: 'Piso 1', rooms: [{ type: 'bedroom', x: 0, y: 0, width: 4, depth: 4 }] },
+  ] });
+  const services = (snapshot, operations) => runDesignTool('casovara_design_services', { project: snapshot, operations });
+  const generated = services(project, [{ op: 'generate', systems: ['electrical', 'plumbing'], phase: 'three' }]);
+  const [ground, upper] = generated.project.levels;
+  const entry = ground.services.electrical.nodes.find(({ kind }) => kind === 'supplyEntry');
+  assert.equal(entry.phase, 'three');
+  assert.ok(ground.services.electrical.runs.some(({ from, medium }) => from === entry.id && medium === 'serviceFeed'));
+  assert.ok(!upper.services.electrical.nodes.some(({ kind }) => kind === 'supplyEntry'));
+  assert.ok(ground.services.plumbing.nodes.some(({ kind }) => kind === 'waterEntry'));
+  assert.ok(ground.services.plumbing.nodes.some(({ kind }) => kind === 'sewerOutlet'));
+  const shared = ground.walls.find(({ x1, x2 }) => x1 === 6 && x2 === 6);
+  const changes = [-1, 1].map((side, index) => ({ op: 'add_node', node: {
+    id: `outlet-group-${index}`, kind: 'outlet', count: 3 + index,
+    mount: 'wall', wall: { wallId: shared.id, fraction: .5, side },
+  } }));
+  changes.push({ op: 'update_node', id: entry.id, node: { phase: 'single' } });
+  const proposal = services(generated.project, [{ op: 'edit', system: 'electrical', changes }]);
+  const { nodes } = proposal.analysis.levels[0].services.electrical;
+  const [a, b] = nodes.filter(({ id }) => id.startsWith('outlet-group-'));
+  assert.deepEqual([a.symbol, b.symbol], ['T 3×', 'T 4×']);
+  assert.deepEqual(new Set([a.roomId, b.roomId]), new Set(['room-east', 'room-west']));
+  assert.equal(a.angle - b.angle === 180 || b.angle - a.angle === 180, true);
+  assert.equal(nodes.find(({ id }) => id === entry.id).phase, 'single');
+  const moved = edit(proposal.project, [{ op: 'move', id: shared.id, dx: .03, dy: 0 }]);
+  const fixture = moved.project.levels[0].services.electrical.nodes.find(({ id }) => id === a.id);
+  assert.equal(fixture.x, Math.round((a.x + .03) * 1000) / 1000);
+  assert.deepEqual(fixture.wall, a.wall);
+  assert.throws(() => services(proposal.project, [{ op: 'edit', system: 'electrical', changes: [
+    { op: 'update_node', id: a.id, node: { count: 0 } },
+  ] }]), /count/);
+});
+
 test('Create draws a house with one shared wall, attached openings and renderable geometry', () => {
   const { project, analysis } = create();
   const [floor] = project.levels;

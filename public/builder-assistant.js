@@ -1,6 +1,6 @@
 import { elements, levelBounds, projectArea, roomStyles } from './builder-engine.js';
 import { formatNumber } from './core.js';
-import { normalizeBuildingServices, serviceRunPoints, serviceSystems } from './building-services.js';
+import { normalizeBuildingServices, resolveServiceNode, serviceNodeSymbol, serviceRunPoints, serviceSystems } from './building-services.js';
 import { normalizeConstructionSchedule, scheduleConstruction } from './construction-schedule.js';
 
 const copy = {
@@ -114,7 +114,7 @@ function comparePlans(base, next) {
   return [...lists, 'services'].map((kind) => {
     const entries = (project) => new Map((project?.levels ?? []).flatMap((level) => kind !== 'services'
       ? level[kind].map((item) => [item.id, JSON.stringify([level.id, compareKey(item, fields[kind])])])
-      : Object.entries(normalizeBuildingServices(level.services) ?? {}).flatMap(([system, net]) => ['nodes', 'runs'].flatMap((type) =>
+      : Object.entries(normalizeBuildingServices(level.services, level)).flatMap(([system, net]) => ['nodes', 'runs'].flatMap((type) =>
         (net?.[type] ?? []).map((item) => [`${level.id}:${system}:${type}:${item.id}`, JSON.stringify(item)])))));
     const before = entries(base);
     const after = entries(next);
@@ -188,20 +188,33 @@ function previewPlan(container, level, copy, differences, proposed, isPortuguese
       'dominant-baseline': 'middle', stroke: '#f4f8fa', 'stroke-width': .075, 'paint-order': 'stroke',
     }, caption);
   }
-  const network = normalizeBuildingServices(level.services)?.[system];
+  const network = normalizeBuildingServices(level.services, level)[system];
   if (network) {
     const profile = serviceSystems[system];
     const layer = svgNode(svg, 'g', { 'data-review-services': system });
     for (const run of network.runs) {
-      const points = serviceRunPoints(network, run);
+      const points = serviceRunPoints(network, run, level);
       if (!points?.length) continue;
       svgNode(layer, 'polyline', { points: points.map(({ x, y }) => `${x},${y}`).join(' '), fill: 'none',
         stroke: profile.media[run.medium].color, 'stroke-width': 2, 'stroke-linejoin': 'round',
         'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke' });
     }
-    for (const node of network.nodes) {
-      const mark = svgNode(layer, 'circle', { cx: node.x, cy: node.y, r: Math.max(.06, Math.min(.20, width * .012)),
-        fill: '#fff', stroke: profile.color, 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke' });
+    const size = Math.max(.13, Math.min(.32, Math.max(width, height) * .019));
+    for (const fixture of network.nodes) {
+      const node = resolveServiceNode(level, fixture);
+      const symbol = serviceNodeSymbol(system, node);
+      const markerWidth = Math.max(size * 1.25, (symbol.length * .61 + .55) * size);
+      const offset = Number.isFinite(node.angle) ? Math.PI * node.angle / 180 : null;
+      const length = Math.max(size * 1.1, markerWidth * .58);
+      const x = offset === null ? node.x : node.x + length * Math.cos(offset);
+      const y = offset === null ? node.y : node.y + length * Math.sin(offset);
+      if (offset !== null) svgNode(layer, 'line', { x1: node.x, y1: node.y, x2: x, y2: y,
+        stroke: profile.color, 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke' });
+      const mark = svgNode(layer, 'g', { transform: `translate(${x},${y})` });
+      svgNode(mark, 'rect', { x: -markerWidth / 2, y: -size * .68, width: markerWidth, height: size * 1.36, rx: size * .24,
+        fill: '#fff', stroke: profile.color, 'stroke-width': 1, 'vector-effect': 'non-scaling-stroke' });
+      svgNode(mark, 'text', { x: 0, y: 0, 'text-anchor': 'middle', 'dominant-baseline': 'central', fill: '#193347',
+        'font-size': size, 'font-weight': 700 }, symbol);
       svgNode(mark, 'title', {}, node.label ?? profile.kinds[node.kind][isPortuguese ? 'pt' : 'en']);
     }
   }

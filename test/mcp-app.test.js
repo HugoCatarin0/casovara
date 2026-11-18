@@ -113,12 +113,21 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
   assert.equal(edit.structuredContent.project.name, 'Casa do Pátio revista');
   assert.ok(edit.structuredContent.project.levels[0].items.some(({ type }) => type === 'bed'));
   assert.ok(!project.levels[0].items.some(({ type }) => type === 'bed'));
-  const drawing = await tool('casovara_design_services', { project, operations: [{ op: 'generate', systems: ['electrical', 'vmc'] }] });
-  assert.ok(drawing.structuredContent.project.levels[0].services.electrical.runs.length);
+  const drawing = await tool('casovara_design_services', {
+    project, operations: [{ op: 'generate', systems: ['electrical', 'vmc'], phase: 'three' }],
+  });
+  const electrical = drawing.structuredContent.project.levels[0].services.electrical;
+  assert.ok(electrical.runs.some(({ medium }) => medium === 'serviceFeed'));
+  assert.equal(electrical.nodes.find(({ kind }) => kind === 'supplyEntry').phase, 'three');
   assert.ok(drawing.structuredContent.project.levels[0].services.vmc.nodes.length);
-  const verification = await tool(inspect.name, { project: drawing.structuredContent.project });
-  assert.equal(verification.structuredContent.analysis.levels[0].services.electrical.nodes.length,
-    drawing.structuredContent.project.levels[0].services.electrical.nodes.length);
+  const socket = electrical.nodes.find(({ kind }) => kind === 'outlet');
+  const revised = await tool('casovara_design_services', { project: drawing.structuredContent.project,
+    operations: [{ op: 'edit', system: 'electrical', changes: [{ op: 'update_node', id: socket.id, node: { count: 5 } }] }],
+  });
+  const verification = await tool(inspect.name, { project: revised.structuredContent.project });
+  const inspected = verification.structuredContent.analysis.levels[0].services.electrical.nodes;
+  assert.equal(inspected.length, electrical.nodes.length);
+  assert.equal(inspected.find(({ id }) => id === socket.id).symbol, 'T 5×');
   const construction = await tool('casovara_plan_construction', { project, operations: [{ op: 'generate', startDate: '2027-03-01' }] });
   assert.equal(construction.structuredContent.constructionChanged, true);
   assert.ok(construction.structuredContent.analysis.construction.tasks.length > 10);

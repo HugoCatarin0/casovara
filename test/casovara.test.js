@@ -126,7 +126,7 @@ test('Projects persist as private files and survive a new server instance', asyn
   const project = makeTemplate('patio', 'pt-PT');
   project.constructionPlan = generateConstructionPlan(project, { startDate: '2027-03-01' });
   const floor = project.levels[0];
-  floor.services = { plumbing: generateServices(floor, 'plumbing') };
+  floor.services = { plumbing: generateServices(floor, 'plumbing'), electrical: generateServices(floor, 'electrical', { phase: 'three' }) };
   const invalid = await api('/api/projects', 'POST', { ...project, levelId: 'absent' }, visitor);
   assert.equal(invalid.status, 422);
   const created = await api('/api/projects', 'POST', project, visitor);

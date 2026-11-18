@@ -26,15 +26,17 @@ O painel **Ambiente 3D** controla a apresentação em Materiais, Maquete ou Téc
 
 Abra **Instalações** no editor e escolha uma especialidade. Pode partir de uma proposta automática baseada nas divisões e nos equipamentos da planta ou colocar os pontos e traçar as ligações manualmente. A vista em planta e a vista 3D mostram os pontos e traçados da camada selecionada. As mudanças entram no histórico e são guardadas com o projeto, incluindo nos ficheiros `.casovara`.
 
+Para fixar um ponto à parede, escolha a face voltada para a divisão servida. A marca aponta para essa divisão e acompanha a parede quando esta é deslocada. Os pontos também admitem montagem no chão, no teto ou posição livre. Use a quantidade da tomada para representar várias no mesmo local, por exemplo `T 3×`.
+
 | Especialidade | Redes e pontos representados |
 | --- | --- |
-| Eletricidade | Quadro, tomadas, iluminação, interruptores e ligações. |
-| Águas e esgotos | Coletores, aparelhos sanitários e traçados independentes de água fria, água quente e esgotos. |
+| Eletricidade | Entrada do cabo principal monofásica ou trifásica, quadro, grupos de tomadas, iluminação, interruptores e ligações. |
+| Águas e esgotos | Entrada de água fria, saída de esgotos, coletores, aparelhos sanitários e traçados independentes de água fria, água quente e esgotos. |
 | VMC | Unidade, condutas, insuflação, extração, admissão e rejeição. |
 | Ar condicionado | Unidades, ligações de refrigerante e drenagem de condensados. |
 | Piso radiante | Coletor, zonas, ida, retorno e circuitos de piso. Gere esta especialidade quando a escolher. |
 
-Os esquemas automáticos organizam a geometria por piso. As ligações entre pisos, o dimensionamento e a conformidade técnica exigem um projeto de especialidades. [Instalações elétricas na DGEG](https://www.dgeg.gov.pt/pt/areas-setoriais/energia/energia-eletrica/instalacoes-eletricas-de-servico-particular/procedimentos-e-controlo-das-instalacoes/projeto/) · [Redes prediais de água e drenagem](https://diariodarepublica.pt/dr/detalhe/decreto-regulamentar/23-1995-431873) · [Sistema de Certificação Energética](https://www.dgeg.gov.pt/pt/areas-setoriais/energia/eficiencia-energetica/sistema-de-certificacao-energetica-dos-edificios/sce-sistema-de-certificacao-energetica-dos-edificios)
+Os esquemas automáticos organizam a geometria por piso. A entrada elétrica, a entrada de água e a saída de esgotos são propostas no primeiro piso da lista. A entrada elétrica começa como monofásica e pode ser alterada. As ligações entre pisos, o dimensionamento e a conformidade técnica exigem um projeto de especialidades. [Instalações elétricas na DGEG](https://www.dgeg.gov.pt/pt/areas-setoriais/energia/energia-eletrica/instalacoes-eletricas-de-servico-particular/procedimentos-e-controlo-das-instalacoes/projeto/) · [Redes prediais de água e drenagem](https://diariodarepublica.pt/dr/detalhe/decreto-regulamentar/23-1995-431873) · [Sistema de Certificação Energética](https://www.dgeg.gov.pt/pt/areas-setoriais/energia/eficiencia-energetica/sistema-de-certificacao-energetica-dos-edificios/sce-sistema-de-certificacao-energetica-dos-edificios)
 
 ## Plano de obra
 

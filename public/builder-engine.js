@@ -1,6 +1,6 @@
 import { furnitureModel, shade } from './model-furniture.js';
 import { appendModelServices } from './model-services.js';
-import { normalizeBuildingServices } from './building-services.js';
+import { normalizeBuildingServices, resolveServiceNode } from './building-services.js';
 import { normalizeConstructionSchedule } from './construction-schedule.js';
 import { elements, normalizeObjectCatalogRef } from './object-catalog.js';
 import { groundShadow, lightSurface, simulatorDefaults, sunSurfaceColor, sunVector } from './simulator.js';
@@ -126,9 +126,12 @@ export function normalizeProject(input, systemIds, isPt) {
     measurements: list(level.measurements).map((measure) => ({
       id: uniqueId(measure.id, used), x1: numeric(measure.x1, 0), y1: numeric(measure.y1, 0), x2: numeric(measure.x2, 0), y2: numeric(measure.y2, 0),
     })),
-    ...(Object.hasOwn(level, 'services') ? { services: normalizeBuildingServices(level.services) } : {}),
+    ...(Object.hasOwn(level, 'services') ? { services: level.services } : {}),
   }));
   if (!levels.length) throw new Error('Invalid project');
+  for (const level of levels) {
+    if (Object.hasOwn(level, 'services')) level.services = normalizeBuildingServices(level.services, level);
+  }
   const constructionPlan = normalizeConstructionSchedule(input.constructionPlan);
   if (input.constructionPlan != null && !constructionPlan) throw new Error('Invalid construction plan');
   return {
@@ -172,7 +175,7 @@ export function levelBounds(level) {
     points.push({ x: x - radius, y: y - radius }, { x: x + radius, y: y + radius });
   }
   for (const network of Object.values(level.services ?? {})) {
-    for (const node of network?.nodes ?? []) points.push(node);
+    for (const node of network?.nodes ?? []) points.push(resolveServiceNode(level, node));
     for (const run of network?.runs ?? []) for (const vertex of run.points ?? []) points.push(vertex);
   }
   let x = Infinity, y = Infinity, maxX = -Infinity, maxY = -Infinity;
@@ -220,6 +223,8 @@ export function modelFaces(project, levelId, cutaway, {
   const faces = [];
   const serviceFaces = [];
   const displayedServices = new Set(services);
+  const storeySlabDepth = .17;
+  const ceilingSlabDepth = .06;
   let owner = null;
   const isSelected = () => owner && owner.kind === selected?.kind && owner.id === selected.id && owner.levelId === levelId;
   function face(points, fill, opacity = 1, { invert = false, preserve = false } = {}) {
@@ -473,11 +478,11 @@ export function modelFaces(project, levelId, cutaway, {
       owner = { kind: 'rooms', id: room.id, levelId: level.id };
       const finish = room.finish ?? ({ living: 'wood', bedroom: 'wood', kitchen: 'ceramic', bath: 'ceramic', circulation: 'stone', outdoor: 'concrete' })[room.type];
       const color = isSelected() ? '#d3a77b' : (settings ? studioFloors[finish] : finishes[room.finish]) ?? (roomStyles[room.type] ?? roomStyles.living).floor;
-      prism(rect(room.x, room.y, room.w, room.h), floorZ - 0.17, 0.17, [color, '#958977', '#817764']);
+      prism(rect(room.x, room.y, room.w, room.h), floorZ - storeySlabDepth, storeySlabDepth, [color, '#958977', '#817764']);
       floorFinish(room, floorZ, finish, color);
       if (!cutaway && showRoof && level === topLevel && level.ceiling && room.type !== 'outdoor') {
         owner = null;
-        prism(rect(room.x, room.y, room.w, room.h), floorZ + level.height - 0.06, 0.06, ['#edebdf', '#dcd7c9', '#d3ccbd']);
+        prism(rect(room.x, room.y, room.w, room.h), floorZ + level.height - ceilingSlabDepth, ceilingSlabDepth, ['#edebdf', '#dcd7c9', '#d3ccbd']);
       }
     }
     for (const wall of level.walls) {
@@ -518,7 +523,14 @@ export function modelFaces(project, levelId, cutaway, {
         captureShadows(casters, { x: room.x, y: room.y, width: room.w, depth: room.h, z: floorZ }, .21);
       }
     }
-    if (displayedServices.size) appendModelServices(serviceFaces, level, floorZ, displayedServices, selectedService);
+    if (displayedServices.size) {
+      const upperLevel = project.levels[project.levels.indexOf(level) + 1];
+      const ceilingHeightAt = ({ x, y }) => {
+        const covered = upperLevel?.rooms?.some((room) => x >= room.x && x <= room.x + room.w && y >= room.y && y <= room.y + room.h);
+        return floorZ + level.height - (covered ? storeySlabDepth : ceilingSlabDepth);
+      };
+      appendModelServices(serviceFaces, level, floorZ, displayedServices, selectedService, ceilingHeightAt);
+    }
     floorZ += level.height;
     owner = null;
     if (level === topLevel && !cutaway && showRoof && ['flat', 'gable', 'hipped'].includes(level.roof)) roof(level, floorZ);

@@ -203,3 +203,104 @@ test('The 3D installation layer uses chosen systems, storey heights, and pickabl
     kind: 'service-node', system: 'electrical', id: 'lamp', levelId: ground.id,
   });
 });
+
+test('3D service fixtures and their runs follow both faces of a moved diagonal wall', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const level = project.levels[0];
+  const wall = makeWall(2, 1, 6, 4, .20);
+  level.walls.push(wall);
+  const mounted = (id, kind, side, extra) => ({ id, kind, x: 0, y: 0, mount: 'wall',
+    wall: { wallId: wall.id, fraction: .5, side }, ...extra });
+  level.services = { electrical: {
+    nodes: [mounted('outlets', 'outlet', 1, { count: 3 }), mounted('board', 'panel', -1)],
+    runs: [{ id: 'power-run', medium: 'power', from: 'board', to: 'outlets', points: [] }],
+  } };
+  const faces = () => modelFaces(project, level.id, true, { services: ['electrical'] });
+  const outletFaces = (allFaces) => allFaces.filter(({ owner }) => owner?.id === 'outlets');
+  const boardFaces = (allFaces) => allFaces.filter(({ owner }) => owner?.id === 'board');
+  const signedDistance = ([x, y]) => (x - (wall.x1 + wall.x2) / 2) * -.6 + (y - (wall.y1 + wall.y2) / 2) * .8;
+  for (const displacement of [0, 1.5]) {
+    wall.x1 += displacement;
+    wall.x2 += displacement;
+    const scene = faces();
+    const outlets = outletFaces(scene);
+    const board = boardFaces(scene);
+    assert.ok(outlets.length > 3);
+    assert.ok(board.length > 0);
+    assert.ok(outlets.every(({ points }) => points.every((point) => signedDistance(point) > .1)));
+    const plates = outlets.filter(({ fill }) => fill === '#fff6da');
+    assert.equal(plates.length, 3);
+    for (const { points } of plates) {
+      assert.ok(points.every((point) => Math.abs(signedDistance(point) - signedDistance(points[0])) < 1e-6), 'Socket plates align with the diagonal face');
+      assert.ok(points.every((point) => point[2] > .35 && point[2] < .53));
+    }
+    assert.ok(board.every(({ points }) => points.every((point) => signedDistance(point) < -.1)));
+    const reachesOutlets = scene.some(({ owner, points }) => owner?.id === 'power-run' &&
+      points.some((point) => signedDistance(point) > .112 && Math.abs(point[2] - level.height * .16) < 1e-9));
+    assert.ok(reachesOutlets);
+    const compiled = compileScene(scene);
+    const azimuth = Math.atan2(-.6, .8) * 180 / Math.PI;
+    for (const [owner, plate, angle] of [['outlets', plates[1], azimuth], ['board', board.find(({ fill }) => fill === '#fff6da'), azimuth + 180]]) {
+      const frame = cameraFrame(compiled, { ...camera, azimuth: angle, elevation: 0 }, width, height);
+      const center = plate.points[0].map((coordinate, axis) => (coordinate + plate.points[2][axis]) / 2);
+      assert.equal(pickScene(compiled, frame, ...projectVertex(frame, ...center))?.id, owner);
+    }
+  }
+});
+
+test('3D ceiling and floor fixtures stay in their storey and service entries show their phases', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const upper = makeLevel('First floor');
+  project.levels.push(upper);
+  upper.services = { electrical: {
+    nodes: [
+      { id: 'light', kind: 'light', x: 1, y: 1, mount: 'ceiling' },
+      { id: 'floor-outlet', kind: 'outlet', x: 2, y: 1, mount: 'floor' },
+      { id: 'single', kind: 'supplyEntry', x: 3, y: 1, mount: 'free', phase: 'single' },
+      { id: 'three', kind: 'supplyEntry', x: 4, y: 1, mount: 'free', phase: 'three' },
+    ], runs: [],
+  } };
+  const groundHeight = project.levels[0].height;
+  const display = (cutaway) => modelFaces(project, upper.id, cutaway, { services: ['electrical'] });
+  for (const cutaway of [false, true]) {
+    const allFaces = display(cutaway);
+    const owned = (id) => allFaces.filter(({ owner }) => owner?.id === id);
+    const z = (id) => owned(id).flatMap(({ points }) => points.map((point) => point[2]));
+    assert.ok(Math.min(...z('floor-outlet')) > groundHeight);
+    assert.ok(Math.max(...z('floor-outlet')) < groundHeight + .075);
+    assert.ok(Math.min(...z('light')) > groundHeight + upper.height - .13);
+    assert.ok(Math.max(...z('light')) < groundHeight + upper.height - .06);
+    assert.equal(owned('single').filter(({ fill }) => fill === '#fff6da').length, 1);
+    assert.equal(owned('three').filter(({ fill }) => fill === '#fff6da').length, 3);
+  }
+});
+
+test('3D ceiling fixtures hang below the slab overhead and remain visible when the ceiling is hidden', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const ground = project.levels[0];
+  ground.rooms.push(makeRoom('living', 0, 0, 6, 4));
+  ground.services = { electrical: { nodes: [
+    { id: 'covered-light', kind: 'light', x: 1, y: 1, mount: 'ceiling' },
+    { id: 'open-light', kind: 'light', x: 4, y: 1, mount: 'ceiling' },
+  ], runs: [] } };
+  const upper = makeLevel('First floor');
+  upper.rooms.push(makeRoom('living', 0, 0, 3, 3));
+  project.levels.push(upper);
+  const options = { services: ['electrical'], roof: false };
+  const ceilingHeight = (faces, id) => Math.max(...faces.filter(({ owner }) => owner?.id === id)
+    .flatMap(({ points }) => points.map((point) => point[2])));
+  const allFloors = modelFaces(project, ground.id, false, { ...options, scope: 'all' });
+  const slabUnderside = Math.min(...allFloors.filter(({ owner }) => owner?.kind === 'rooms' && owner.levelId === upper.id)
+    .flatMap(({ points }) => points.map((point) => point[2])));
+  const mountedHeight = ceilingHeight(allFloors, 'covered-light');
+  assert.ok(mountedHeight < slabUnderside);
+  assert.ok(mountedHeight > slabUnderside - .01);
+  assert.ok(ceilingHeight(allFloors, 'open-light') > slabUnderside);
+
+  ground.ceiling = false;
+  const visibleGround = modelFaces(project, ground.id, false, options);
+  assert.equal(ceilingHeight(visibleGround, 'covered-light'), mountedHeight);
+  const scene = compileScene(visibleGround);
+  const frame = cameraFrame(scene, { ...camera, elevation: 70 }, width, height);
+  assert.equal(pickScene(scene, frame, ...projectVertex(frame, 1, 1, mountedHeight))?.id, 'covered-light');
+});

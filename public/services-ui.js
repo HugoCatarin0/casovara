@@ -1,4 +1,5 @@
-import { applyServiceOperations, inspectServices, serviceLimits, serviceRunPoints, serviceSystems } from './building-services.js';
+import { applyServiceOperations, inspectServices, resolveServiceNode, serviceLimits, serviceMounts, serviceNodeSymbol, servicePhases, serviceRunPoints, serviceSystems, snapServiceNode } from './building-services.js';
+import { roomStyles } from './builder-engine.js';
 
 const ids = Object.keys(serviceSystems);
 const empty = { nodes: [], runs: [] };
@@ -18,6 +19,16 @@ const copy = {
   choose: ['Selecionar elemento', 'Select element'], none: ['Sem seleção', 'No selection'],
   label: ['Identificação', 'Label'], apply: ['Aplicar alterações', 'Apply changes'], remove: ['Eliminar', 'Delete'], from: ['Origem', 'From'], to: ['Destino', 'To'],
   bends: ['Pontos de passagem', 'Waypoints'], x: ['X (m)', 'X (m)'], y: ['Y (m)', 'Y (m)'],
+  mount: ['Montagem', 'Mounting'], wall: ['Parede', 'Wall'], floorMount: ['Chão', 'Floor'], ceiling: ['Teto', 'Ceiling'], free: ['Livre', 'Free'],
+  face: ['Face da parede', 'Wall face'], wallSide: ['Face {side} · {direction}', 'Face {side} · {direction}'],
+  exterior: ['Exterior', 'Outside'], unassignedFace: ['Sem divisão atribuída', 'No room assigned'],
+  wallPosition: ['Posição na parede (%)', 'Position along wall (%)'],
+  wallStart: ['0% no primeiro extremo · 100% no segundo', '0% at the start · 100% at the end'],
+  noWall: ['Desenha uma parede para montar o ponto numa das suas faces.', 'Draw a wall to mount the point on one of its faces.'],
+  wallHint: ['Clica ou toca junto à face da parede voltada para a zona que o ponto serve.', 'Click or tap beside the wall face that faces the zone this point serves.'],
+  wallMiss: ['Aproxima-te da face que queres usar ou escolhe outra montagem.', 'Move closer to the wall face you want or choose a different mounting.'],
+  sockets: ['Número de tomadas', 'Number of outlets'], phase: ['Alimentação', 'Supply'], generationPhase: ['Alimentação da proposta', 'Proposed supply'],
+  single: ['Monofásica', 'Single-phase'], three: ['Trifásica', 'Three-phase'],
   selectHint: ['Seleciona um ponto ou uma ligação na planta. Arrasta pontos para os mover.', 'Select a point or connection in the plan. Drag points to move them.'],
   placeHint: ['Clica ou toca na planta para colocar o ponto.', 'Click or tap the plan to place the point.'],
   linkHint: ['Seleciona o ponto de origem na planta.', 'Select the starting point in the plan.'],
@@ -37,7 +48,7 @@ const glyph = (key) => `<svg viewBox="0 0 24 24" width="17" height="17" aria-hid
 const tag = ({ id, kind, system, levelId }) => `${levelId}:${system}:${kind}:${id}`;
 const samePoint = (a, b) => Math.hypot(a.x - b.x, a.y - b.y) < .015;
 const mediumDashes = {
-  power: [5, 3], control: [2, 3], dedicated: [8, 3], hot: [6, 3], drain: [2, 3],
+  power: [5, 3], control: [2, 3], dedicated: [8, 3], serviceFeed: [10, 3, 2, 3], hot: [6, 3], drain: [2, 3],
   extract: [5, 2], intake: [2, 2], exhaust: [6, 3, 2, 3], condensate: [2, 3], return: [5, 3],
 };
 
@@ -45,12 +56,48 @@ function linePoints(points) {
   return points.map(({ x, y }) => `${x},${y}`).join(' ');
 }
 
+const mountLabel = (mount) => mount === 'floor' ? 'floorMount' : mount;
+const hasOutlets = (id, kind) => id === 'electrical' && ['outlet', 'dedicatedOutlet'].includes(kind);
+const hasPhase = (id, kind) => id === 'electrical' && kind === 'supplyEntry';
+const supplyPhase = (node) => node.phase ?? 'single';
+
+function nodeDescription(id, node, language) {
+  const local = language === 'pt' ? 0 : 1;
+  return [node.label || serviceSystems[id].kinds[node.kind][language],
+    hasOutlets(id, node.kind) && node.count > 1 ? `${node.count}×` : null,
+    hasPhase(id, node.kind) ? copy[supplyPhase(node)][local] : null,
+    node.mount ? copy[mountLabel(node.mount)]?.[local] : null,
+  ].filter(Boolean).join(' · ');
+}
+
+function nodeGraphic(id, node, unit, active, interactive) {
+  const symbol = serviceNodeSymbol(id, node);
+  const color = serviceSystems[id].color;
+  const radius = unit * (active ? 10 : 8.5);
+  const halfWidth = Math.max(radius, unit * (symbol.length * 2.9 + 3));
+  const wallMounted = node.mount === 'wall' && Number.isFinite(node.angle);
+  const angle = node.angle * Math.PI / 180;
+  const normal = wallMounted ? { x: Math.cos(angle), y: Math.sin(angle) } : { x: 0, y: 0 };
+  const reach = Math.hypot(halfWidth * normal.x, radius * normal.y) + unit * 4;
+  const cx = Number((normal.x * reach).toFixed(6));
+  const cy = Number((normal.y * reach).toFixed(6));
+  const outline = `fill="${active ? color : '#fffdf9'}" stroke="${color}" stroke-width="${unit * 1.7}"`;
+  const stem = wallMounted ? `<path d="M0 0L${cx} ${cy}" stroke="#fffdf9" stroke-width="${unit * 4.5}" pointer-events="none"/><path d="M0 0L${cx} ${cy}" stroke="${color}" stroke-width="${unit * 1.8}" pointer-events="none"/><circle r="${unit * 2}" fill="${color}" pointer-events="none"/>` : '';
+  return `${interactive && wallMounted ? `<path d="M0 0L${cx} ${cy}" stroke="transparent" stroke-width="${unit * 17}" pointer-events="stroke"/>` : ''}
+    ${stem}<g transform="translate(${cx} ${cy})" data-service-marker>
+      ${interactive ? `<rect x="${-halfWidth - unit * 5}" y="${-unit * 15}" width="${(halfWidth + unit * 5) * 2}" height="${unit * 30}" fill="transparent" pointer-events="all"/>` : ''}
+      <rect x="${-halfWidth}" y="${-radius}" width="${halfWidth * 2}" height="${radius * 2}" rx="${radius}" ${outline} pointer-events="none"/>
+      <text y=".34em" fill="${active ? '#fff' : color}" font-size="${unit * 9.5}" font-weight="760" text-anchor="middle" pointer-events="none">${esc(symbol)}</text>
+    </g>`;
+}
+
 export function renderServicesPlan(level, { layers, unit = .019, locale, selection, move, interactive = false } = {}) {
   const language = locale === 'pt-PT' ? 'pt' : 'en';
   return (layers ?? []).filter((id) => serviceSystems[id] && level.services?.[id]).map((id) => {
     const spec = serviceSystems[id];
     const original = level.services[id];
-    const network = move?.selection.system === id ? { ...original, nodes: original.nodes.map((node) => node.id === move.selection.id ? { ...node, ...move.point } : node) } : original;
+    const network = { ...original, nodes: original.nodes.map((node) => resolveServiceNode(level,
+      move?.selection.system === id && node.id === move.selection.id ? { ...node, ...move.point } : node)) };
     const selected = (kind, targetId) => selection?.system === id && selection.kind === kind && selection.id === targetId;
     const runs = network.runs.map((run) => {
       const points = serviceRunPoints(network, run);
@@ -64,16 +111,8 @@ export function renderServicesPlan(level, { layers, unit = .019, locale, selecti
         <polyline points="${linePoints(points)}" stroke="${medium.color}" stroke-width="${unit * (active ? 4.2 : 2.55)}" ${dash ? `stroke-dasharray="${dash}"` : ''} pointer-events="none"/>
         ${active && interactive ? (run.points ?? []).map((point) => `<circle cx="${point.x}" cy="${point.y}" r="${unit * 3}" fill="#fff" stroke="${medium.color}" stroke-width="${unit * 1.6}"/>`).join('') : ''}</g>`;
     }).join('');
-    const nodes = network.nodes.map((node) => {
-      const type = spec.kinds[node.kind];
-      const active = selected('node', node.id);
-      const radius = unit * (active ? 10 : 8.5);
-      const outline = `fill="${active ? spec.color : '#fffdf9'}" stroke="${spec.color}" stroke-width="${unit * 1.7}"`;
-      return `<g transform="translate(${node.x} ${node.y})" data-service-system="${id}" data-service-kind="node" data-service-id="${esc(node.id)}"><title>${esc(node.label || type[language])}</title>
-        ${interactive ? `<circle r="${unit * 15}" fill="transparent" pointer-events="all"/>` : ''}
-        <circle r="${radius}" ${outline} pointer-events="none"/>
-        <text y=".34em" fill="${active ? '#fff' : spec.color}" font-size="${unit * 8.8}" font-weight="760" text-anchor="middle" pointer-events="none">${esc(type.symbol)}</text></g>`;
-    }).join('');
+    const nodes = network.nodes.map((node) => `<g transform="translate(${node.x} ${node.y})" data-service-system="${id}" data-service-kind="node" data-service-id="${esc(node.id)}"><title>${esc(nodeDescription(id, node, language))}</title>
+      ${nodeGraphic(id, node, unit, selected('node', node.id), interactive)}</g>`).join('');
     return `<g class="cv-services-overlay" data-plotted-service="${id}" fill="none" stroke-linecap="round" stroke-linejoin="round">${runs}${nodes}</g>`;
   }).join('');
 }
@@ -128,14 +167,21 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   const pinned = new Set();
   let system = ids[0];
   let kind = 'light';
-  let medium = Object.keys(serviceSystems[system].media)[0];
+  let mount;
+  let count = 1;
+  let phase = 'single';
+  let generationPhase;
+  let medium = 'lighting';
   let mode = 'select';
   let scope = 'current';
   let selected = null;
   let route = null;
   let message = '';
+  let detailDraft = null;
 
   function network(id = system) { return getLevel().services?.[id] ?? empty; }
+  function defaultMount(id = kind) { return serviceSystems[system].kinds[id].defaultMount ?? 'free'; }
+  function placementMount() { return mount ?? defaultMount(); }
   function record(selection = selected) {
     if (!selection || getLevel().id !== selection.levelId) return null;
     return network(selection.system)[selection.kind === 'node' ? 'nodes' : 'runs'].find(({ id }) => id === selection.id);
@@ -147,11 +193,14 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     if (id === system) return;
     system = id;
     kind = Object.keys(serviceSystems[system].kinds)[0];
-    medium = Object.keys(serviceSystems[system].media)[0];
+    mount = undefined;
+    count = 1;
+    phase = 'single';
+    medium = system === 'electrical' ? 'lighting' : Object.keys(serviceSystems[system].media)[0];
     clear();
   }
   function clear() {
-    mode = 'select'; selected = route = null; message = '';
+    mode = 'select'; selected = route = detailDraft = null; message = '';
   }
   function selection() { return record() ? selected : null; }
   function locate(element) {
@@ -163,6 +212,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   }
   function select(picked) {
     if (picked && record(picked)) setSystem(picked.system);
+    if (picked?.id !== selected?.id || picked?.kind !== selected?.kind) detailDraft = null;
     selected = picked;
     message = '';
   }
@@ -182,16 +232,25 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       return false;
     }
   }
+  function groundFloor() { return getProject().levels[0]; }
+  function entryPhase() {
+    return generationPhase ?? supplyPhase(groundFloor()?.services?.electrical?.nodes.find((node) => node.kind === 'supplyEntry') ?? {});
+  }
   function generate() {
     const floors = scope === 'all' ? getProject().levels : [getLevel()];
     const target = system;
+    const entry = entryPhase();
     const existing = floors.some((floor) => floor.services?.[target]?.nodes.length || floor.services?.[target]?.runs.length);
     function perform() {
       try {
-        const updates = floors.map((floor) => ({ floor, system: target, next: applyServiceOperations(floor, target, [{ op: 'generate', replace: true }]) }));
+        const updates = floors.map((floor) => ({
+          floor, system: target,
+          next: applyServiceOperations(floor, target, [{ op: 'generate', replace: true, includeEntry: floor.id === groundFloor()?.id, ...(target === 'electrical' ? { phase: entry } : {}) }]),
+        }));
         visible.add(target);
         update(updates.filter(({ floor, next }) => JSON.stringify(floor.services?.[target] ?? empty) !== JSON.stringify(next)), () => {
           clear();
+          if (target === 'electrical' && floors.some((floor) => floor.id === groundFloor()?.id)) generationPhase = undefined;
           message = updates.some(({ next }) => next.nodes.length) ? t('ready') : t('noGeometry');
         });
       } catch { message = t('invalid'); refresh(); }
@@ -207,8 +266,9 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   function numberField(name, title, value, key = '') {
     return `<label class="cv-field">${t(title)}<input required type="number" inputmode="decimal" step="any" min="${-serviceLimits.coordinate}" max="${serviceLimits.coordinate}" name="${name}" value="${esc(value)}"${key ? ` data-bend="${key}"` : ''}></label>`;
   }
-  function nodeTitle(node, spec = serviceSystems[system]) {
-    return node.label || `${spec.kinds[node.kind][language]} · ${number.format(node.x)}, ${number.format(node.y)}`;
+  function nodeTitle(node) {
+    const item = resolveServiceNode(getLevel(), node);
+    return `${nodeDescription(system, item, language)} · ${number.format(item.x)}, ${number.format(item.y)}`;
   }
   function runTitle(run, current, spec = serviceSystems[system]) {
     if (run.label) return run.label;
@@ -219,6 +279,60 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   function button(action, key, icon, extra = '', pressed) {
     return `<button type="button" class="cv-button" data-action="service-action:${action}" ${pressed === undefined ? '' : `aria-pressed="${pressed}"`} ${extra}>${icon ? glyph(icon) : ''}<span>${t(key)}</span></button>`;
   }
+  function mountOptions() {
+    return serviceMounts.map((type) => [type, t(mountLabel(type))]);
+  }
+  function phaseField(key, value) {
+    return choose(key, key === 'generation-phase' ? 'generationPhase' : 'phase', servicePhases.map((phase) => [phase, t(phase)]), value, 'phase');
+  }
+  function countField(key, value) {
+    return `<label class="cv-field">${t('sockets')}<input required type="number" inputmode="numeric" step="1" min="1" max="${serviceLimits.count}" name="count"${key ? ` data-service-field="${key}"` : ''} value="${esc(value)}"></label>`;
+  }
+  function facing(wall, side) {
+    const angle = Math.atan2((wall.x2 - wall.x1) * side, (wall.y1 - wall.y2) * side) * 180 / Math.PI;
+    const directions = language === 'pt' ? ['E', 'SE', 'S', 'SO', 'O', 'NO', 'N', 'NE'] : ['E', 'SE', 'S', 'SW', 'W', 'NW', 'N', 'NE'];
+    return directions[(Math.round(angle / 45) + 8) % 8];
+  }
+  function wallFaceOptions(wall, fraction) {
+    const floor = getLevel();
+    const sides = [1, -1];
+    const faceRooms = sides.map((side) => {
+      const position = resolveServiceNode(floor, { mount: 'wall', wall: { wallId: wall.id, fraction, side } });
+      return floor.rooms.find(({ id }) => id === position.roomId);
+    });
+    return sides.map((value, index) => {
+      const room = faceRooms[index];
+      const exterior = faceRooms[1 - index] && wall.spec?.assembly !== 'partition' && wall.thickness >= .18;
+      const name = room?.name || roomStyles[room?.type]?.[language] || t(exterior ? 'exterior' : 'unassignedFace');
+      const heading = t('wallSide').replace('{side}', index + 1).replace('{direction}', facing(wall, value));
+      return [String(value), `${heading} · ${name}`];
+    });
+  }
+  function wallFields(location, draft) {
+    const floor = getLevel();
+    const walls = floor.walls ?? [];
+    if (!walls.length) return `<p class="cv-service-hint">${t('noWall')}</p>`;
+    const anchor = walls.some(({ id }) => id === location.wall?.wallId) ? location.wall
+      : snapServiceNode(floor, location, { threshold: Infinity })?.wall;
+    const wall = walls.find(({ id }) => id === (draft.wallId ?? anchor?.wallId)) ?? walls[0];
+    const fraction = draft.fraction ?? Number(((anchor?.fraction ?? .5) * 100).toFixed(4));
+    const side = draft.side ?? String(anchor?.side ?? 1);
+    return `
+      ${choose('detail-wall', 'wall', walls.map(({ id, x1, x2, y1, y2 }, index) => [id, `${t('wall')} ${index + 1} · ${number.format(Math.hypot(x2 - x1, y2 - y1))} m`]), wall.id, 'wallId')}
+      ${choose('', 'face', wallFaceOptions(wall, Number(fraction) / 100), side, 'side')}
+      <label class="cv-field">${t('wallPosition')}<input required type="number" inputmode="decimal" name="fraction" min="0" max="100" step="any" value="${esc(fraction)}"><small>${t('wallStart')}</small></label>`;
+  }
+  function nodeDetail(item, kinds) {
+    const draft = detailDraft ?? {};
+    const type = draft.kind ?? item.kind;
+    const mounting = draft.mount ?? item.mount ?? 'free';
+    const location = resolveServiceNode(getLevel(), item);
+    return `${choose('detail-kind', 'type', kinds, type, 'kind')}
+      ${choose('detail-mount', 'mount', mountOptions(), mounting, 'mount')}
+      ${mounting === 'wall' ? wallFields(location, draft) : `<div class="cv-row">${numberField('x', 'x', draft.x ?? location.x)}${numberField('y', 'y', draft.y ?? location.y)}</div>`}
+      ${hasOutlets(system, type) ? countField('', draft.count ?? item.count ?? 1) : ''}
+      ${hasPhase(system, type) ? phaseField('', draft.phase ?? supplyPhase(item)) : ''}`;
+  }
   function detail(current, spec) {
     const item = record();
     if (item == null) return '';
@@ -227,8 +341,8 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     const media = Object.entries(spec.media).map(([id, entry]) => [id, entry[language]]);
     const kinds = Object.entries(spec.kinds).map(([id, entry]) => [id, entry[language]]);
     return `<form data-service-form="${selected.kind}" class="cv-service-detail"><h3>${t(selected.kind)}</h3>
-      <label class="cv-field">${t('label')}<input name="label" maxlength="${serviceLimits.label}" value="${esc(item.label)}"></label>
-      ${node ? `${choose('', 'type', kinds, item.kind, 'kind')}<div class="cv-row">${numberField('x', 'x', item.x)}${numberField('y', 'y', item.y)}</div>` : `
+      <label class="cv-field">${t('label')}<input name="label" maxlength="${serviceLimits.label}" value="${esc(node ? detailDraft?.label ?? item.label : item.label)}"></label>
+      ${node ? nodeDetail(item, kinds) : `
         ${choose('', 'medium', media, item.medium, 'medium')}${choose('', 'from', nodes, item.from, 'from')}${choose('', 'to', nodes, item.to, 'to')}
         <div class="cv-service-points"><h4>${t('bends')}</h4>
         ${(item.points ?? []).map(({ x, y }, index) => `<div class="cv-service-point-row">${numberField(`bx${index}`, 'x', x, String(index))}${numberField(`by${index}`, 'y', y, String(index))}<button type="button" aria-label="${t('remove')} ${index + 1}" data-action="service-action:remove-bend" data-index="${index}" class="cv-tool">×</button></div>`).join('')}
@@ -239,7 +353,8 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   function panel() {
     const current = network();
     const spec = serviceSystems[system];
-    const inspection = inspectServices(getLevel(), system);
+    const onGround = getLevel().id === groundFloor()?.id;
+    const inspection = inspectServices(getLevel(), system, { includeEntry: onGround });
     const nodes = current.nodes.map((node) => option(`node:${node.id}`, nodeTitle(node), selected?.kind === 'node' ? `node:${selected.id}` : ''));
     const runs = current.runs.map((run) => option(`run:${run.id}`, runTitle(run, current), selected?.kind === 'run' ? `run:${selected.id}` : ''));
     const kinds = Object.entries(spec.kinds).map(([id, info]) => [id, info[language]]);
@@ -249,13 +364,17 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     return `<section class="cv-panel-section cv-service-section">
       <p class="cv-service-floor">${t('floor')} · ${esc(getLevel().name)}</p>
       ${choose('system', 'system', Object.entries(serviceSystems).map(([id, info]) => [id, info[language]]), system)}
-      <div class="cv-service-generate">${choose('scope', 'scope', [['current', t('current')], ['all', t('all')]], scope)}${button('generate', planned ? 'reset' : 'generate')}</div>
+      <div class="cv-service-generate"><div class="cv-service-generate-options">${choose('scope', 'scope', [['current', t('current')], ['all', t('all')]], scope)}
+        ${system === 'electrical' && (onGround || scope === 'all') ? phaseField('generation-phase', entryPhase()) : ''}</div>${button('generate', planned ? 'reset' : 'generate')}</div>
       <p class="cv-service-note">${t('schematic')}</p>
       <details class="cv-service-layers"><summary>${t('visible')}</summary><div>${ids.map((id) => `<label><input type="checkbox" data-service-field="visible" value="${id}"${visible.has(id) ? ' checked' : ''}><i style="--cv-network-color:${serviceSystems[id].color}"></i>${esc(serviceSystems[id][language])}</label>`).join('')}</div></details>
     </section>
     <section class="cv-panel-section cv-service-section">
       <div class="cv-service-tools" role="group" aria-label="${t('title')}">${button('select', 'select', 'select', '', mode === 'select')}${button('place', 'place', 'node', '', mode === 'place')}${button('link', 'link', 'run', current.nodes.length < 2 ? 'disabled' : '', mode === 'link')}</div>
-      ${mode === 'place' ? choose('kind', 'type', kinds, kind) : mode === 'link' ? choose('medium', 'medium', media, medium) : ''}
+      ${mode === 'place' ? `${choose('kind', 'type', kinds, kind)}
+        ${choose('mount', 'mount', mountOptions(), placementMount())}
+        ${placementMount() === 'wall' && !getLevel().walls?.length ? `<p class="cv-service-hint">${t('noWall')}</p>` : ''}
+        ${hasOutlets(system, kind) ? countField('count', count) : ''}${hasPhase(system, kind) ? phaseField('phase', phase) : ''}` : mode === 'link' ? choose('medium', 'medium', media, medium) : ''}
       <p class="cv-service-hint">${hint()}</p>
       ${button('canvas', 'canvas', null, 'data-service-canvas')}
       ${message ? `<p class="cv-service-message" role="status">${esc(message)}</p>` : ''}
@@ -270,7 +389,8 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   }
 
   function hint() {
-    return t(mode === 'place' ? 'placeHint' : mode === 'bend' ? 'bendHint' : mode === 'link' ? (route ? 'viaHint' : 'linkHint') : 'selectHint');
+    if (mode === 'place') return t(placementMount() === 'wall' ? 'wallHint' : 'placeHint');
+    return t(mode === 'bend' ? 'bendHint' : mode === 'link' ? (route ? 'viaHint' : 'linkHint') : 'selectHint');
   }
   function modeAction(action) {
     if (action === 'generate') { generate(); return; }
@@ -280,6 +400,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     visible.add(system);
     message = '';
     route = null;
+    detailDraft = null;
     mode = action;
     if (mode !== 'bend') selected = null;
   }
@@ -296,7 +417,16 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     switch (input.dataset.serviceField) {
       case 'system': setSystem(input.value); break;
       case 'scope': scope = input.value; break;
-      case 'kind': kind = input.value; break;
+      case 'kind': kind = input.value; mount = undefined; message = ''; break;
+      case 'mount': mount = input.value; message = ''; break;
+      case 'count': count = clampCount(input.value); input.value = String(count); break;
+      case 'phase': phase = input.value; break;
+      case 'generation-phase': generationPhase = input.value; break;
+      case 'detail-kind':
+      case 'detail-mount':
+      case 'detail-wall':
+        detailDraft = { ...detailDraft, ...Object.fromEntries(new FormData(input.form)) };
+        break;
       case 'medium': medium = input.value; route = null; break;
       case 'visible':
         if (input.checked) { visible.add(input.value); pinned.add(input.value); }
@@ -310,21 +440,50 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
       }
     }
   }
+  function updateWallFaces(input) {
+    if (!input.validity.valid) return;
+    const { wallId, side } = input.form.elements;
+    const wall = getLevel().walls.find(({ id }) => id === wallId.value);
+    if (!wall) return;
+    const faces = wallFaceOptions(wall, input.valueAsNumber / 100);
+    for (const [index, option] of [...side.options].entries()) option.textContent = faces[index][1];
+  }
   function submit(data) {
     const item = record();
     if (!item) return;
     const label = String(data.get('label') ?? '').trim();
-    const fields = selected.kind === 'node' ? { label, kind: data.get('kind'), ...nodeLocation({ x: Number(data.get('x')), y: Number(data.get('y')) }, item) } : {
+    const fields = selected.kind === 'node' ? nodeFields(data, item, label) : {
       label, medium: data.get('medium'), from: data.get('from'), to: data.get('to'),
       points: item.points.map((_, index) => ({ x: Number(data.get(`bx${index}`)), y: Number(data.get(`by${index}`)) })),
     };
-    apply([{ op: `update_${selected.kind}`, id: item.id, [selected.kind]: fields }]);
+    if (!fields) { message = t('noWall'); refresh(); return; }
+    apply([{ op: `update_${selected.kind}`, id: item.id, [selected.kind]: fields }], () => { detailDraft = null; });
+  }
+  function clampCount(value) {
+    return Math.min(serviceLimits.count, Math.max(1, Math.round(Number(value)) || 1));
+  }
+  function optionsFor(type, count, phase) {
+    return { ...(hasOutlets(system, type) ? { count: clampCount(count) } : {}), ...(hasPhase(system, type) ? { phase } : {}) };
+  }
+  function nodeFields(data, item, label) {
+    const kind = data.get('kind');
+    const mount = data.get('mount') ?? item.mount ?? 'free';
+    const phase = data.get('phase') ?? supplyPhase(item);
+    const fields = { label, kind, ...optionsFor(kind, data.get('count') ?? item.count, phase) };
+    if (mount === 'wall') {
+      const wallId = data.get('wallId');
+      if (!wallId) return null;
+      const wall = { wallId, fraction: Number(data.get('fraction')) / 100, side: Number(data.get('side')) };
+      return { ...fields, mount, wall };
+    }
+    return { ...fields, ...nodeLocation({ x: Number(data.get('x')), y: Number(data.get('y')) }, item, mount), mount, wall: null };
   }
 
   function hitNode(hit, raw, tolerance) {
     if (hit?.system === system && hit.kind === 'node') return record(hit);
     let result;
-    for (const node of network().nodes) {
+    for (const item of network().nodes) {
+      const node = resolveServiceNode(getLevel(), item);
       const distance = Math.hypot(node.x - raw.x, node.y - raw.y);
       if (distance < tolerance) { result = node; tolerance = distance; }
     }
@@ -332,8 +491,10 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
   }
   function click(point, raw, hit, tolerance) {
     if (mode === 'place') {
+      const node = placement(point, raw, tolerance);
+      if (!node) { message = t('wallMiss'); refresh(); return; }
       const before = new Set(network().nodes.map(({ id }) => id));
-      apply([{ op: 'add_node', node: { kind, ...nodeLocation(point) } }], (next) => {
+      apply([{ op: 'add_node', node: { kind, ...locationFields(node), ...optionsFor(kind, count, phase) } }], (next) => {
         mode = 'select';
         const added = next.nodes.find(({ id }) => !before.has(id));
         if (added) select({ kind: 'node', id: added.id, system, levelId: getLevel().id });
@@ -343,7 +504,7 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
     if (mode === 'bend') {
       const item = record();
       if (!item || selected.kind !== 'run') { clear(); refresh(); return; }
-      const index = nearestSegment(point, serviceRunPoints(network(), item));
+      const index = nearestSegment(point, serviceRunPoints(network(), item, getLevel()));
       const points = [...item.points];
       points.splice(index, 0, point);
       apply([{ op: 'update_run', id: item.id, run: { points } }], () => { mode = 'select'; });
@@ -364,35 +525,59 @@ export function createServicesEditor({ locale, getProject, getLevel, commit, ref
         if (added) select({ kind: 'run', id: added.id, system, levelId: getLevel().id });
       });
       return;
-    } else if (!node && !samePoint(route.points.at(-1) ?? network().nodes.find(({ id }) => id === route.from), point)) {
+    } else if (!node && !samePoint(route.points.at(-1) ?? resolveServiceNode(getLevel(), network().nodes.find(({ id }) => id === route.from)), point)) {
       if (route.points.length < serviceLimits.points) { route.points.push(point); message = ''; }
       else message = t('tooManyBends');
     }
     refresh();
   }
-  function moveNode(picked, point) {
+  function moveNode(picked, point, resolved = false) {
     const current = record(picked);
     if (!current || picked.kind !== 'node') return false;
-    return apply([{ op: 'update_node', id: picked.id, node: nodeLocation(point, current) }]);
+    const next = resolved ? point : previewMove(picked, point);
+    return next && apply([{ op: 'update_node', id: picked.id, node: locationFields(next) }], () => { detailDraft = null; });
   }
-  function nodeLocation(point, current) {
-    if (current && current.x === point.x && current.y === point.y) return point;
+  function previewMove(picked, point, threshold = .45) {
+    const current = record(picked);
+    if (!current) return null;
+    if (current.mount !== 'wall') return nodeLocation(point, current);
+    const host = current.wall;
+    const floor = getLevel();
+    const snapped = snapServiceNode(floor, point, { threshold: Math.max(threshold, .18) });
+    if (snapped) return snapped;
+    return host && snapServiceNode(floor, point, { threshold: Infinity, wallId: host.wallId, side: host.side });
+  }
+  function locationFields({ x, y, mount, wall, roomId }) {
+    return { x, y, ...(mount ? { mount } : {}), ...(wall ? { wall } : {}), roomId: roomId ?? null };
+  }
+  function nodeLocation({ x, y }, current, mount = current?.mount) {
+    if (current && current.x === x && current.y === y && current.mount === mount) return { x, y, mount, roomId: current.roomId };
+    const point = { x, y };
     const room = getLevel().rooms.find(({ x, y, w, h, type }) => type !== 'outdoor' && point.x >= x && point.y >= y && point.x <= x + w && point.y <= y + h);
-    return { ...point, roomId: room?.id ?? null };
+    return { ...point, mount, roomId: room?.id ?? null };
   }
-  function preview(hover, unit) {
+  function placement(point, raw, threshold) {
+    const mount = placementMount();
+    return mount === 'wall' ? snapServiceNode(getLevel(), raw, { threshold: Math.max(threshold, .18) }) : nodeLocation(point, null, mount);
+  }
+  function preview(hover, unit, raw = hover, tolerance = .45) {
     if (!hover || mode === 'select') return '';
     const spec = serviceSystems[system];
     const stroke = mode === 'link' ? spec.media[medium].color : spec.color;
-    const start = route && network().nodes.find(({ id }) => id === route.from);
+    if (mode === 'place') {
+      const node = placement(hover, raw, tolerance);
+      if (node) return `<g transform="translate(${node.x} ${node.y})" opacity=".78">${nodeGraphic(system, { ...node, kind, count, phase }, unit, false, false)}</g>`;
+      return `<path d="M${hover.x - 4 * unit} ${hover.y - 4 * unit}l${8 * unit} ${8 * unit}m0 ${-8 * unit}l${-8 * unit} ${8 * unit}" stroke="${stroke}" stroke-width="${1.8 * unit}" opacity=".7"/>`;
+    }
+    const start = route && resolveServiceNode(getLevel(), network().nodes.find(({ id }) => id === route.from));
     const routeLine = start ? `<polyline points="${linePoints([start, ...route.points, hover])}" fill="none" stroke="${stroke}" stroke-width="${2 * unit}" stroke-dasharray="${4 * unit} ${3 * unit}" />` : '';
     return `${routeLine}<circle cx="${hover.x}" cy="${hover.y}" r="${5 * unit}" fill="#fffdf9" stroke="${stroke}" stroke-width="${1.8 * unit}"/>`;
   }
 
   return {
-    clear, click, field, hint, locate, modeAction, moveNode, panel, preview, remove, removeBend, select, selection, submit,
+    clear, click, field, hint, locate, modeAction, moveNode, panel, preview, previewMove, remove, removeBend, select, selection, submit, updateWallFaces,
     reveal(id = system, { keepVisible = false } = {}) { setSystem(id, keepVisible); },
-    reset() { clear(); visible.clear(); pinned.clear(); },
+    reset() { clear(); visible.clear(); pinned.clear(); generationPhase = undefined; },
     get mode() { return mode; },
     get layers() { return [...visible]; },
     get system() { return system; },

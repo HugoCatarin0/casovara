@@ -20,6 +20,11 @@ function createEditor(levels) {
 const emptyFloor = (id) => ({ id, name: id, height: 2.7, rooms: [], walls: [], items: [] });
 const choose = (editor, key, value, checked) => editor.field({ dataset: { serviceField: key }, value, checked });
 const click = (editor, x, y) => editor.click({ x, y }, { x, y }, null, .2);
+const edit = (editor, fields) => {
+  const data = new FormData();
+  for (const [key, value] of Object.entries(fields)) data.set(key, value);
+  editor.submit(data);
+};
 
 test('The canvas tools place points, connect them through a bend and preserve the run when moving one endpoint', () => {
   const floor = emptyFloor('ground');
@@ -65,6 +70,7 @@ test('Generating all storeys requests confirmation before replacing manual work,
   assert.equal(commits.length, 2);
   assert.equal(commits[1].length, 2);
   assert.ok(levels.every((level) => level.services.electrical.runs.length > 0));
+  assert.deepEqual(levels.map((level) => level.services.electrical.nodes.filter(({ kind }) => kind === 'supplyEntry').length), [1, 0]);
 });
 
 test('Changing the active installation preserves only explicitly retained layers', () => {
@@ -77,4 +83,66 @@ test('Changing the active installation preserves only explicitly retained layers
   assert.deepEqual(editor.layers, ['plumbing', 'vmc']);
   editor.reveal('radiantFloor', { keepVisible: true });
   assert.deepEqual(editor.layers, ['plumbing', 'vmc', 'radiantFloor']);
+});
+
+test('Wall marks attach on the raw-pointer face, can be moved across and carry a grouped outlet label', () => {
+  const floor = { ...emptyFloor('ground'),
+    rooms: [{ id: 'bath', type: 'bath', x: 0, y: -3, w: 4, h: 3 },
+      { id: 'living', type: 'living', name: 'Sala principal', x: 0, y: 0, w: 4, h: 3 }],
+    walls: [{ id: 'shared', x1: 0, y1: 0, x2: 4, y2: 0, thickness: .2 }],
+  };
+  const { editor } = createEditor([floor]);
+  editor.modeAction('place');
+  choose(editor, 'kind', 'outlet');
+  choose(editor, 'count', '3');
+  editor.click({ x: 1, y: 0 }, { x: 1, y: -.12 }, null, .2);
+  let outlet = floor.services.electrical.nodes[0];
+  assert.deepEqual(outlet.wall, { wallId: 'shared', fraction: .25, side: -1 });
+  assert.equal(outlet.roomId, 'bath');
+  assert.equal(outlet.count, 3);
+  assert.match(editor.panel(), /Face 1 · S · Sala principal/);
+  assert.match(editor.panel(), /Face 2 · N · Casa de banho/);
+  assert.match(renderServicesPlan(floor, { layers: editor.layers, locale: 'pt-PT' }), /T 3×/);
+
+  const target = editor.selection();
+  editor.moveNode(target, { x: 3, y: .15 });
+  outlet = floor.services.electrical.nodes[0];
+  assert.deepEqual(outlet.wall, { wallId: 'shared', fraction: .75, side: 1 });
+  assert.equal(outlet.roomId, 'living');
+  floor.walls[0].y1 = floor.walls[0].y2 = .5;
+  assert.match(renderServicesPlan(floor, { layers: editor.layers, locale: 'pt-PT' }), /translate\(3 0\.615\)/);
+  edit(editor, { kind: 'outlet', mount: 'floor', x: 1, y: 1, count: 5 });
+  outlet = floor.services.electrical.nodes[0];
+  assert.equal(outlet.mount, 'floor');
+  assert.equal(outlet.wall, undefined);
+  assert.match(renderServicesPlan(floor, { layers: editor.layers, locale: 'pt-PT' }), /T 5×/);
+});
+
+test('The main service phase and alternate mounting surfaces are available to the editor', () => {
+  const floor = { ...emptyFloor('ground'), walls: [{ id: 'front', x1: 0, y1: 0, x2: 4, y2: 0, thickness: .2 }] };
+  const { editor } = createEditor([floor]);
+  editor.modeAction('place');
+  choose(editor, 'kind', 'supplyEntry');
+  choose(editor, 'phase', 'three');
+  click(editor, 2, -.15);
+  const entry = floor.services.electrical.nodes[0];
+  assert.equal(entry.phase, 'three');
+  const render = () => renderServicesPlan(floor, { layers: editor.layers, locale: 'pt-PT' });
+  assert.match(render(), /Trifásica/);
+  assert.match(render(), /E 3~/);
+  edit(editor, { kind: 'supplyEntry', mount: 'wall', wallId: 'front', side: '1', fraction: '40', phase: 'single' });
+  assert.equal(floor.services.electrical.nodes[0].wall.fraction, .4);
+  assert.match(render(), /E 1~/);
+
+  choose(editor, 'system', 'vmc');
+  editor.modeAction('place');
+  choose(editor, 'kind', 'supplyVent');
+  click(editor, 1, 1);
+  assert.equal(floor.services.vmc.nodes[0].mount, 'ceiling');
+  choose(editor, 'system', 'plumbing');
+  editor.modeAction('place');
+  choose(editor, 'kind', 'tap');
+  choose(editor, 'mount', 'floor');
+  click(editor, 2, 2);
+  assert.equal(floor.services.plumbing.nodes[0].mount, 'floor');
 });

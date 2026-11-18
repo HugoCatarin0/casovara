@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  applyServiceOperations, generateServices, inspectServices, normalizeBuildingServices, serviceRunPoints, serviceSystems,
+  applyServiceOperations, generateServices, inspectServices, normalizeBuildingServices,
+  resolveServiceNode, serviceNodeSymbol, serviceRunPoints, serviceSystems, snapServiceNode,
 } from '../public/building-services.js';
 
 const rooms = [
@@ -116,4 +117,112 @@ test('Legacy floors and malformed imports normalize safely and replacement prese
   assert.deepEqual(applyServiceOperations({ rooms: [], services }, 'vmc', [{ op: 'generate', replace: true }]), services.vmc);
   assert.ok(inspectServices({ rooms: [], services }, 'vmc').warnings.some(({ code }) => code === 'missing_room'));
   assert.equal(inspectServices({ rooms: [] }, 'plumbing').warnings[0].code, 'no_rooms');
+});
+
+const framedFloor = {
+  rooms: [
+    { id: 'living', type: 'living', x: 0, y: 0, w: 6, h: 3 },
+    { id: 'kitchen', type: 'kitchen', x: 0, y: 3, w: 6, h: 3 },
+  ],
+  walls: [
+    { id: 'north', x1: 0, y1: 0, x2: 6, y2: 0, thickness: .25 },
+    { id: 'east', x1: 6, y1: 0, x2: 6, y2: 6, thickness: .25 },
+    { id: 'south', x1: 6, y1: 6, x2: 0, y2: 6, thickness: .25 },
+    { id: 'west', x1: 0, y1: 6, x2: 0, y2: 0, thickness: .25 },
+    { id: 'partition', x1: 0, y1: 3, x2: 6, y2: 3, thickness: .20 },
+  ],
+  items: [{ id: 'door', type: 'door', x: 3, y: 3, width: .9 }],
+};
+
+test('Wall mounts derive the facing room and snap to solid wall beside an opening', () => {
+  const southFace = snapServiceNode(framedFloor, { x: 3, y: 3.1 }, { wallId: 'partition', roomId: 'kitchen' });
+  const northFace = snapServiceNode(framedFloor, { x: 3, y: 2.9 }, { wallId: 'partition', roomId: 'living' });
+  assert.deepEqual([southFace.wall.side, southFace.y, southFace.angle, southFace.roomId], [1, 3.115, 90, 'kitchen']);
+  assert.deepEqual([northFace.wall.side, northFace.y, northFace.angle, northFace.roomId], [-1, 2.885, -90, 'living']);
+  assert.ok(Math.abs(southFace.x - 3) >= .56);
+  assert.equal(snapServiceNode(framedFloor, { x: 3, y: 3.1 }, { wallId: 'partition', roomId: 'kitchen', threshold: .2 }), null);
+  assert.equal(snapServiceNode(framedFloor, { x: 2, y: 3.25 }, { wallId: 'partition', exterior: true }), null);
+});
+
+test('Installation editing preserves outlet groups and supports wall, floor and ceiling placements', () => {
+  const network = applyServiceOperations(framedFloor, 'electrical', [
+    { op: 'add_node', node: { id: 'group', kind: 'outlet', count: 6, wall: { wallId: 'partition', fraction: .25, side: -1 } } },
+    { op: 'add_node', node: { id: 'light', kind: 'light', x: 3, y: 1, mount: 'ceiling' } },
+  ]);
+  const floor = { ...framedFloor, services: { electrical: network } };
+  const first = network.nodes[0];
+  assert.deepEqual(first, {
+    id: 'group', kind: 'outlet', count: 6, x: 1.5, y: 2.885, roomId: 'living', mount: 'wall',
+    wall: { wallId: 'partition', fraction: .25, side: -1 },
+  });
+  assert.equal(serviceNodeSymbol('electrical', first), 'T 6×');
+  assert.equal(network.nodes[1].mount, 'ceiling');
+  const moved = applyServiceOperations(floor, 'electrical', [
+    { op: 'update_node', id: 'group', node: { wall: { ...first.wall, side: 1 }, count: 3 } },
+  ]);
+  assert.equal(inspectServices({ ...floor, services: { electrical: moved } }, 'electrical').nodes[0].symbol, 'T 3×');
+  assert.equal(moved.nodes[0].roomId, 'kitchen');
+  const floorMount = applyServiceOperations({ ...floor, services: { electrical: moved } }, 'electrical', [
+    { op: 'update_node', id: 'group', node: { mount: 'floor', wall: null, x: 2, y: 4 } },
+  ]).nodes[0];
+  assert.deepEqual([floorMount.x, floorMount.y, floorMount.mount, floorMount.wall, floorMount.count], [2, 4, 'floor', undefined, 3]);
+  assert.throws(() => applyServiceOperations(floor, 'electrical', [
+    { op: 'update_node', id: 'group', node: { count: 0 } },
+  ]), /mounting options/);
+  assert.throws(() => applyServiceOperations(floor, 'electrical', [
+    { op: 'add_node', node: { kind: 'panel', wall: { wallId: 'missing', fraction: .5, side: 1 } } },
+  ]), /wall .*does not exist/);
+});
+
+test('Moving a host wall updates its points and run endpoints while retaining anchor IDs and waypoints', () => {
+  const network = applyServiceOperations(framedFloor, 'electrical', [
+    { op: 'add_node', node: { id: 'panel', kind: 'panel', x: 2, y: .2 } },
+    { op: 'add_node', node: { id: 'group', kind: 'outlet', wall: { wallId: 'partition', fraction: .25, side: -1 } } },
+    { op: 'add_run', run: { id: 'power', medium: 'power', from: 'panel', to: 'group', points: [{ x: 2, y: 2 }] } },
+  ]);
+  const wall = framedFloor.walls.at(-1);
+  const edited = {
+    ...framedFloor, services: { electrical: network },
+    walls: [...framedFloor.walls.slice(0, -1), { ...wall, x2: 8, y1: 3.4, y2: 3.4, thickness: .24 }],
+  };
+  const point = resolveServiceNode(edited, network.nodes[1]);
+  assert.deepEqual([point.x, point.y, point.wall.wallId, point.wall.fraction], [2, 3.265, 'partition', .25]);
+  assert.deepEqual(serviceRunPoints(network, network.runs[0], edited).slice(1), [{ x: 2, y: 2 }, { x: 2, y: 3.265 }]);
+  const persisted = normalizeBuildingServices(edited.services, edited);
+  const orphan = { ...edited, services: persisted, walls: edited.walls.slice(0, -1) };
+  const drawing = inspectServices(orphan, 'electrical');
+  assert.equal(drawing.nodes[1].y, 3.265);
+  assert.ok(drawing.warnings.some(({ code, nodeId }) => code === 'missing_wall' && nodeId === 'group'));
+});
+
+test('Generation models electrical phase, specialised terminals and first-storey mains', () => {
+  const electrical = generateServices(framedFloor, 'electrical', { phase: 'three' });
+  const entry = electrical.nodes.find(({ kind }) => kind === 'supplyEntry');
+  assert.deepEqual([entry.phase, entry.roomId, entry.mount], ['three', undefined, 'wall']);
+  assert.equal(serviceNodeSymbol('electrical', entry), 'E 3~');
+  const feeder = electrical.runs.find(({ medium }) => medium === 'serviceFeed');
+  assert.equal(feeder.from, entry.id);
+  assert.equal(electrical.nodes.find(({ id }) => id === feeder.to).kind, 'panel');
+  assert.ok(electrical.nodes.filter(({ kind }) => ['panel', 'outlet', 'switch'].includes(kind)).every(({ mount, roomId }) => mount === 'wall' && roomId));
+  assert.ok(electrical.nodes.some(({ kind, count }) => kind === 'outlet' && count === 3));
+  assert.equal(electrical.nodes.find(({ kind }) => kind === 'light').mount, 'ceiling');
+  const regenerated = applyServiceOperations({ ...framedFloor, services: { electrical } }, 'electrical', [{ op: 'generate', replace: true }]);
+  assert.equal(regenerated.nodes.find(({ kind }) => kind === 'supplyEntry').phase, 'three');
+  for (const system of ['electrical', 'plumbing']) {
+    const upperStorey = generateServices(framedFloor, system, { includeEntry: false });
+    assert.ok(upperStorey.nodes.every(({ kind }) => !['supplyEntry', 'waterEntry', 'sewerOutlet'].includes(kind)));
+    assert.deepEqual(inspectServices({ ...framedFloor, services: { [system]: upperStorey } }, system, { includeEntry: false }).warnings, []);
+  }
+  const plumbing = generateServices(framedFloor, 'plumbing');
+  assert.equal(plumbing.nodes.find(({ kind }) => kind === 'waterEntry').mount, 'wall');
+  assert.equal(plumbing.nodes.find(({ kind }) => kind === 'sewerOutlet').mount, 'floor');
+  const vmc = generateServices(framedFloor, 'vmc');
+  assert.ok(vmc.nodes.filter(({ kind }) => ['outsideAir', 'exhaustOutlet'].includes(kind)).every(({ mount, roomId }) => mount === 'wall' && !roomId));
+  assert.equal(vmc.nodes.find(({ kind }) => kind === 'supplyVent').mount, 'ceiling');
+  const ac = generateServices(framedFloor, 'airConditioning');
+  assert.equal(ac.nodes.find(({ kind }) => kind === 'indoorUnit').mount, 'wall');
+  assert.equal(ac.nodes.find(({ kind }) => kind === 'outdoorUnit').mount, 'floor');
+  const radiant = generateServices(framedFloor, 'radiantFloor');
+  assert.equal(radiant.nodes.find(({ kind }) => kind === 'manifold').mount, 'wall');
+  assert.equal(radiant.nodes.find(({ kind }) => kind === 'zone').mount, 'floor');
 });

@@ -4,7 +4,7 @@ import { mountBuilderAssistant } from './builder-assistant.js';
 import { mountObjectLibrary } from './builder-catalog.js';
 import { mountConstructionSchedule } from './schedule-ui.js';
 import { createServicesEditor, renderServicesPlan, servicesPrintLegend } from './services-ui.js';
-import { serviceLimits, serviceSystems } from './building-services.js';
+import { resolveServiceNode, serviceLimits, serviceSystems } from './building-services.js';
 import { registerBuilderTools } from './builder-webmcp.js';
 import { estimateProject, formatMoney, formatNumber, projectApi, systems } from './core.js';
 import { makeTemplate, templates } from './templates.js';
@@ -550,6 +550,18 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (history.length > 45) history.shift();
     future.length = 0;
     operation();
+    for (const floor of project.levels) {
+      for (const { nodes } of Object.values(floor.services ?? {})) {
+        for (const node of nodes) {
+          const resolved = resolveServiceNode(floor, node);
+          if (resolved === node) continue;
+          node.x = resolved.x;
+          node.y = resolved.y;
+          if (resolved.roomId) node.roomId = resolved.roomId;
+          else delete node.roomId;
+        }
+      }
+    }
     markChanged();
     if (redraw) render();
   }
@@ -972,19 +984,23 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     return `<g data-shape="annotations" data-id="${item.id}" fill="${color}">${item.north ? `<path d="M${item.x} ${item.y - .43}l.17 .46-.17-.13-.17 .13Z"/>` : ''}<text x="${item.x}" y="${item.y}" font-size=".22" font-weight="600" stroke="${technicalDrawing() ? draftingInk.halo : '#faf8f2'}" stroke-width=".047" paint-order="stroke">${str(item.text)}</text></g>`;
   }
 
-  function draftLayer(forExport = false, unit = .022, compact = false) {
+  function planFloor(forExport = false) {
     const current = level();
-    const activeShape = (kind, id) => !forExport && selected?.kind === kind && selected.id === id;
     const moving = !forExport && drag?.type === 'shape' && drag.moved ? drag : null;
-    const shifted = moving?.geometry;
+    if (!moving) return current;
+    const moved = (kind, item) => moving.id === item.id && moving.kind === kind ? moving.preview : moving.geometry?.[kind]?.get(item.id) ?? item;
+    return { ...current, rooms: current.rooms.map((room) => moved('rooms', room)), walls: current.walls.map((wall) => moved('walls', wall)),
+      items: current.items.map((item) => moved('items', item)), measurements: current.measurements.map((item) => moved('measurements', item)),
+      annotations: (current.annotations ?? []).map((item) => moved('annotations', item)) };
+  }
+  function draftLayer(forExport = false, unit = .022, compact = false, current = planFloor(forExport)) {
+    const activeShape = (kind, id) => !forExport && selected?.kind === kind && selected.id === id;
     const image = current.image;
     const background = image ? `<image x="${image.x}" y="${image.y}" width="${image.width}" height="${image.height}" opacity="${image.opacity}" href="${image.src}" preserveAspectRatio="none" pointer-events="none"/>` : '';
-    const moved = (kind, item) => moving?.id === item.id && moving.kind === kind ? moving.preview : shifted?.[kind]?.get(item.id) ?? item;
-    const visibleRooms = current.rooms.map((room) => moved('rooms', room));
-    const visibleWalls = current.walls.map((wall) => moved('walls', wall));
-    const visibleItems = current.items.filter((item) => settings.furniture || elements[item.type].opening || elements[item.type].structural).map((item) => moved('items', item));
+    const { rooms: visibleRooms, walls: visibleWalls } = current;
+    const visibleItems = current.items.filter((item) => settings.furniture || elements[item.type].opening || elements[item.type].structural);
     const technical = technicalDrawing();
-    const lowerLevel = !forExport && settings.lowerLevel ? project.levels[project.levels.indexOf(current) - 1] : null;
+    const lowerLevel = !forExport && settings.lowerLevel ? project.levels[project.levels.findIndex(({ id }) => id === current.id) - 1] : null;
     const reference = lowerFloorReference(lowerLevel, unit);
     const outline = settings.dimensions && (visibleRooms.length || visibleWalls.length) ?
       technical ? overallPlanDimensions(visibleWalls, visibleRooms, unit, n) :
@@ -997,11 +1013,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const walls = visibleWalls.map((wall) => wallShape(wall, activeShape('walls', wall.id), forExport, unit)).join('');
     const items = visibleItems.map((item) => itemShape(item, activeShape('items', item.id), false, visibleWalls)).join('');
     const captions = settings.labels ? visibleRooms.map((room) => roomCaption(room, obstacles, unit)).join('') : '';
-    const measures = current.measurements.map((measure) => measurementShape(moved('measurements', measure), activeShape('measurements', measure.id), false, unit)).join('');
+    const measures = current.measurements.map((measure) => measurementShape(measure, activeShape('measurements', measure.id), false, unit)).join('');
     const inside = settings.roomDimensions ? interiorPlanDimensions(visibleRooms, visibleWalls, unit, n) : '';
     const activeWall = technical && !forExport && selected?.kind === 'walls' ? visibleWalls.find((wall) => selected.id === wall.id) : null;
     const activeDimension = activeWall ? selectedWallDimension(activeWall, unit, n) : '';
-    const annotations = (current.annotations ?? []).map((item) => annotationShape(moved('annotations', item), activeShape('annotations', item.id))).join('');
+    const annotations = (current.annotations ?? []).map((item) => annotationShape(item, activeShape('annotations', item.id))).join('');
     return `${technical ? planPatterns() : ''}${background}${rooms}${reference}${outline}${walls}${items}${captions}${tags?.markup ?? ''}${inside}${measures}${annotations}${activeDimension}`;
   }
 
@@ -1131,14 +1147,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       ruler.textContent = `${n(rulerMeters)} m`;
     }
     if (scene) {
-      planScene.innerHTML = draftLayer(false, unit, rect.width < 535);
-      const current = level();
+      const current = planFloor();
+      planScene.innerHTML = draftLayer(false, unit, rect.width < 535, current);
       root.querySelector('[data-role="empty"]').hidden = tool !== 'select' || !!(current.rooms.length || current.walls.length || current.items.length || current.image || current.annotations?.length || servicesEditor.layers.some((id) => current.services?.[id]?.nodes.length));
       const moving = drag?.type === 'service-node' && drag.moved ? { selection: drag.selection, point: drag.preview } : null;
       planServices.innerHTML = renderServicesPlan(current, { locale, layers: servicesEditor.layers, unit, selection: servicesEditor.selection(), move: moving, interactive: tool === 'service' });
     }
     const handles = selectedHandles(unit);
-    planOverlay.innerHTML = `<g pointer-events="none">${tool === 'service' ? servicesEditor.preview(hoverPoint, unit) : drawPreview(unit)}</g>${handles}`;
+    planOverlay.innerHTML = `<g pointer-events="none">${tool === 'service' ? servicesEditor.preview(hoverPoint, unit, hoverPoint?.raw, serviceTolerance(hoverPoint?.pointerType, unit)) : drawPreview(unit)}</g>${handles}`;
     if (tool === 'service') plane.setAttribute('aria-description', servicesEditor.hint());
     else if (selected?.kind === 'items' && handles) plane.setAttribute('aria-description', tr('rotationHint'));
     else plane.removeAttribute('aria-description');
@@ -1465,6 +1481,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       for (const annotation of entry.annotations ?? []) annotation.x = x(annotation.x);
       for (const { nodes, runs } of Object.values(entry.services ?? {})) {
         for (const item of [...nodes, ...runs.flatMap((run) => run.points)]) item.x = Number(clamp(x(item.x), -serviceLimits.coordinate, serviceLimits.coordinate).toFixed(3));
+        for (const node of nodes) if (node.wall) node.wall.side *= -1;
       }
       if (entry.image) entry.image.x = x(entry.image.x + entry.image.width);
     }
@@ -1748,12 +1765,20 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const step = gridStep();
     const move = (value) => {
       const bounded = clamp(value, -serviceLimits.coordinate, serviceLimits.coordinate);
-      return settings.snap && !event.altKey ? snapTo(bounded, step) : bounded;
+      return drag.original.mount !== 'wall' && settings.snap && !event.altKey ? snapTo(bounded, step) : bounded;
     };
-    const next = point(move(drag.original.x + p.x - drag.start.x), move(drag.original.y + p.y - drag.start.y));
-    if (next.x === drag.preview.x && next.y === drag.preview.y) return false;
+    const next = servicesEditor.previewMove(drag.selection,
+      point(move(drag.original.x + p.x - drag.start.x), move(drag.original.y + p.y - drag.start.y)), serviceTolerance(event.pointerType));
+    if (!next || sameServicePlacement(next, drag.preview)) return false;
     drag.preview = next;
     return true;
+  }
+  function sameServicePlacement(a, b) {
+    return a.x === b.x && a.y === b.y && a.wall?.wallId === b.wall?.wallId
+      && a.wall?.side === b.wall?.side && a.wall?.fraction === b.wall?.fraction;
+  }
+  function serviceTolerance(pointerType, unit = worldPixel()) {
+    return Math.min(.55, unit * (pointerType === 'touch' ? 22 : 16));
   }
   plane.addEventListener('pointerdown', (event) => {
     if ((event.button !== 0 && event.button !== 1) || pen.size >= 2) return;
@@ -1785,7 +1810,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (servicesEditor.mode === 'select') {
         servicesEditor.select(picked);
         if (picked?.kind === 'node') {
-          const original = level().services[picked.system].nodes.find(({ id }) => id === picked.id);
+          const original = resolveServiceNode(level(), level().services[picked.system].nodes.find(({ id }) => id === picked.id));
           drag = { type: 'service-node', selection: picked, pointerId: event.pointerId, start: world, screen: point(event.clientX, event.clientY), original, preview: original, moved: false };
         } else if (!picked) drag = panFrom(event);
         refreshServices();
@@ -1846,7 +1871,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       }
     } else if (tool === 'service') {
       if (drag?.type === 'service-placement') drag.moved ||= Math.hypot(event.clientX - drag.screen.x, event.clientY - drag.screen.y) > 8;
-      hoverPoint = position(event);
+      hoverPoint = { ...position(event), raw: planPosition(event), pointerType: event.pointerType };
       schedulePlan();
     } else if (drag?.type === 'shape') {
       drag.moved ||= Math.hypot(event.clientX - drag.screen.x, event.clientY - drag.screen.y) > 5;
@@ -1898,10 +1923,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const moved = drag?.moved;
     const drawing = drag?.type === 'draw';
     const panning = drag?.type === 'pan';
-    if (!cancelled && moved && serviceDrag && (drag.preview.x !== drag.original.x || drag.preview.y !== drag.original.y)) {
+    if (!cancelled && moved && serviceDrag && !sameServicePlacement(drag.preview, drag.original)) {
       const { selection, preview } = drag;
       drag = null;
-      servicesEditor.moveNode(selection, point(preview.x, preview.y));
+      servicesEditor.moveNode(selection, preview, true);
     } else if (!cancelled && moved && drag?.type === 'shape' && drag.preview !== drag.original) {
       const { kind, original, preview, geometry } = drag;
       drag = null;
@@ -1917,7 +1942,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (rotating || serviceDrag) modelPaint();
     }
     if (!cancelled && (!moved || drawing) && !preventClick && event.button === 0) {
-      if (servicePlacement) servicesEditor.click(position(event), planPosition(event), servicePlacement.hit, Math.min(.5, worldPixel() * 16));
+      if (servicePlacement) servicesEditor.click(position(event), planPosition(event), servicePlacement.hit, serviceTolerance(event.pointerType));
       else drawAction(event);
     }
   }
@@ -2407,9 +2432,17 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     syncSimulatorControls(simulatorPanel, locale, simulator);
     modelPaint();
   }, listen);
+  studioPanel.addEventListener('input', (event) => {
+    if (event.target.matches('[data-service-form="node"] [name="fraction"]')) servicesEditor.updateWallFaces(event.target);
+  }, listen);
   root.addEventListener('change', async (event) => {
     const input = event.target;
-    if (input.matches('[data-service-field]')) { servicesEditor.field(input); refreshServices(); return; }
+    if (input.matches('[data-service-field]')) {
+      servicesEditor.field(input);
+      if (input.dataset.serviceField === 'count') schedulePlan();
+      else refreshServices();
+      return;
+    }
     if (input.matches('[data-role="file"]')) {
       const file = input.files?.[0];
       input.value = '';
