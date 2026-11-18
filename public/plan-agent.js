@@ -6,6 +6,7 @@ import {
 } from './building-services.js';
 import { applyConstructionOperations, constructionLimits, normalizeConstructionSchedule, scheduleConstruction, validateConstructionSchedule } from './construction-schedule.js';
 import { generateConstructionPlan } from './construction-tasks.js';
+import { normalizeSlab, slabFor, slabLimits, slabModes } from './slab.js';
 import {
   applyWallAssembly, effectiveWallHeight, getWallSpec, illustrativeWallSpec, normalizeOpening,
   normalizeWallSpec, openingTypes, openingVertical, wallAssemblies, wallBaseOffset,
@@ -61,7 +62,15 @@ const wall = {
     exteriorSide: { type: 'number', enum: [-1, 1] },
   }),
 };
-const levelProperties = { name: label, height: clearHeight, ceiling: flag };
+const slabSpan = decimal(slabLimits.minSpan, slabLimits.maxSpan, 'Slab footprint dimension in metres.');
+const slabPosition = decimal(-slabLimits.coordinate, slabLimits.coordinate, 'Slab footprint position in metres.');
+const slabFootprint = { x: slabPosition, y: slabPosition, width: slabSpan, depth: slabSpan };
+const slab = object({
+  mode: { ...choice(slabModes), description: 'Automatic from indoor rooms, custom rectangular footprint, or no structural slab.' },
+  thickness: decimal(slabLimits.minThickness, slabLimits.maxThickness, 'Slab thickness in metres. Defaults to 0.17 m for a new storey.'),
+  footprint: { ...object(slabFootprint), description: 'Custom rectangle in plan coordinates. Supply x, y, width and depth to create it. An edit can change individual coordinates or dimensions.' },
+});
+const levelProperties = { name: label, height: clearHeight, ceiling: flag, slab };
 const level = object({
   id, ...levelProperties,
   rooms: list(object({ id, ...room }, ['type', 'x', 'y', 'width', 'depth']), 0, 60), roof,
@@ -164,17 +173,17 @@ const constructionEdits = [
 export const designTools = Object.freeze([
   {
     name: 'casovara_create_plan', title: 'Create a house plan',
-    description: 'Build a new editable Casovara project from explicit storeys and rectangular rooms in metres. Generates merged walls and attached door and window openings. Returns the plan and geometric checks. Does not save to the workspace.',
+    description: 'Build a new editable Casovara project from explicit storeys and rectangular rooms in metres. Generates walls, attached openings and automatic slabs. A storey can specify its slab thickness and footprint. Returns the plan and geometric checks. Does not save to the workspace.',
     inputSchema: object({ name: label, systemId: system, levels: list(level, 1, 12) }, ['name', 'systemId', 'levels']),
   },
   {
     name: 'casovara_edit_plan', title: 'Edit a house plan',
-    description: 'Apply an atomic batch of edits to a Casovara project. Supports rooms, walls, anchored openings, furniture, roof, storeys, and project settings. Inspect first for exact entity ids. Provide the full project to external tools. Returns an editable draft; does not save to the workspace.',
+    description: 'Apply an atomic batch of edits to a Casovara project. Supports rooms, walls, anchored openings, furniture, roof, storeys, slabs and project settings. Inspect first for exact entity ids. Provide the full project to external tools. Returns an editable draft without saving to the workspace.',
     inputSchema: object({ project: projectInput, operations: list({ oneOf: operations }, 1, 80) }, ['operations']),
   },
   {
     name: 'casovara_inspect_plan', title: 'Inspect a house plan',
-    description: 'Read a Casovara project and return storey geometry, building-service ids, construction tasks and dependencies when defined, coverage, indicative material costs, and warnings. Provide the full project to external tools.',
+    description: 'Read a Casovara project and return storey geometry and slab settings, building-service ids, construction tasks and dependencies when defined, indicative material costs and warnings. Provide the full project to external tools.',
     inputSchema: object({ project: projectInput }),
   },
   {
@@ -198,6 +207,7 @@ Use Casovara to draw editable house plans. Work in metres with x and y as plan a
 - Indoor walls follow room boundaries without duplicate shared segments. Ground floors receive entrance doors and connected rooms receive passage doors when sufficient wall length is available. Attached windows are added where there is a suitable exterior segment. Use \`autoOpenings: false\` for manually designed openings. A top storey defaults to a flat roof unless specified.
 - Use \`casovara_inspect_plan\` before editing. It returns stable level, room, wall and item ids and practical layout warnings. Check hall access, vertical circulation, and dimensions. Its area is the union of room rectangles excluding outdoors. Material costs are illustrative.
 - Use \`casovara_edit_plan\` for atomic changes. Each operation can target a \`levelId\`; omit it to use the active storey. Use exact ids and supply opening \`wallId\` plus an \`offset\` in metres from that wall's first endpoint to the opening centre. A door or window must fit within its wall in both dimensions. If walls were created independently of a room, include explicit wall edits when moving a room boundary. Evaluate the warnings after every edit.
+- Set a storey's structural slab with \`slab\` on creation, addition or a \`set_level\` edit. The default \`auto\` slab follows the indoor rooms. Use \`custom\` with a rectangular \`footprint\` (x, y, width and depth in metres) or use \`none\` to disable it. Edit \`thickness\` in metres independently of the ceiling and floor finish. Keep the current mode and footprint when changing thickness alone. The default thickness is for visual planning.
 - Use \`casovara_design_services\` to generate or adjust building services. The supported systems are ${serviceIds.map((id) => `\`${id}\``).join(', ')}. Specify radiant floor only if the user asks for it or confirms it for relevant rooms. A schematic generation preserves existing work unless the user requests replacement. Use an \`edit\` operation with the exact system and storey ids and a batch of node or run changes. Each run joins two nodes in the same system and takes optional intermediate points, omitting its endpoints. A storey schematic leaves connections between storeys for coordination. These tools do not determine loads, sizes, slopes, equipment ratings or regulatory compliance.
 - For wall-mounted fixtures, use \`mount: "wall"\` and \`wall: {wallId, fraction, side}\`. The fraction runs from the wall's first endpoint (0) to its second (1). Side 1 follows the normal (-dy, dx) in plan coordinates and side -1 faces the other way. Choose the served room's side and avoid openings. The wall anchor supplies x and y. Use \`floor\`, \`ceiling\` or \`free\` and x, y for other positions. Generated light points use the ceiling. A wall switch, board or socket normally faces its room. Apply the same mounting convention to fixtures in the other systems.
 - A group of three sockets is one \`outlet\` node with \`count: 3\`, shown as T 3×. A generated electrical \`supplyEntry\` joins the ground floor's board through \`serviceFeed\`. Request \`phase: "three"\` at generation, or update the entry node's phase to \`three\` or \`single\`. The generated phase defaults to \`single\` when unspecified and is a planning assumption. The ground floor plumbing proposes a cold-water entry and wastewater outlet. Coordinate exterior terminals and floor-to-floor connections against the project.
@@ -268,6 +278,14 @@ function validate(schema, value, path) {
 }
 
 const rounded = (value, scale = 1000) => Math.round(value * scale) / scale;
+
+function updateSlab(patch, floor) {
+  const previous = slabFor(floor);
+  const mode = patch.mode ?? (patch.footprint ? 'custom' : previous.mode);
+  const footprint = patch.footprint ? { ...previous.footprint, ...patch.footprint } : previous.footprint;
+  if (footprint || mode === 'custom') validate(object(slabFootprint, Object.keys(slabFootprint)), footprint, 'slab.footprint');
+  return normalizeSlab({ ...previous, ...patch, mode, footprint });
+}
 
 function reserveId(used, supplied, prefix) {
   if (supplied) {
@@ -456,6 +474,7 @@ function makeFloor(data, systemId, used, index, isTop) {
     measurements: [], annotations: [], ceiling: data.ceiling ?? false,
     roof: data.roof?.type ?? (isTop ? 'flat' : 'none'), pitch: data.roof?.pitch ?? 30,
   };
+  if (data.slab) result.slab = updateSlab(data.slab, result);
   for (const entry of data.rooms) {
     const room = makeRoom(entry, used);
     requireRoomFit(room, result.rooms);
@@ -676,6 +695,7 @@ function applyEdit(project, edit, used) {
       if (edit.name) floor.name = edit.name.trim();
       if (edit.height !== undefined) floor.height = edit.height;
       if (edit.ceiling !== undefined) floor.ceiling = edit.ceiling;
+      if (edit.slab) floor.slab = updateSlab(edit.slab, floor);
       if (edit.active) project.levelId = floor.id;
       break;
     case 'remove_level':
@@ -866,7 +886,7 @@ function analyse(project, locale) {
     }));
     return {
       id: floor.id, name: floor.name, area: rounded(projectArea({ levels: [floor] }), 100),
-      height: floor.height, roof: floor.roof ?? 'none', pitch: floor.pitch ?? 30,
+      height: floor.height, roof: floor.roof ?? 'none', pitch: floor.pitch ?? 30, slab: slabFor(floor),
       ...(Object.keys(serviceAnalysis).length ? { services: serviceAnalysis } : {}),
       rooms: floor.rooms.map(({ id, type, name, x, y, w, h, finish }) => ({
         id, type, name: name || roomStyles[type][pt ? 'pt' : 'en'], x, y, width: w, depth: h, finish: finish ?? 'natural',

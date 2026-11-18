@@ -22,6 +22,8 @@ Use `Ctrl/⌘ + K` para localizar ferramentas, compartimentos e vãos, ou `1`, `
 
 O painel **Ambiente 3D** controla a apresentação em Materiais, Maquete ou Técnico, a altura do corte, o terreno, o mobiliário e as sombras. As vistas guardadas incluem estes controlos. As predefinições de luz usam a direção e a altura solar escolhidas no painel para estudos visuais.
 
+Em **Pavimentos → Laje**, escolha uma laje automática, desenhe um perímetro retangular ou deixe o piso sem laje. A laje automática segue o contorno interior das divisões. A espessura é editável e começa em 17 cm nos projetos novos e nos que ainda não têm configuração de laje. Cada piso guarda as suas próprias definições de laje. O teto e o acabamento do pavimento têm controlos próprios.
+
 ## Instalações da casa
 
 Abra **Instalações** no editor e escolha uma especialidade. Pode partir de uma proposta automática baseada nas divisões e nos equipamentos da planta ou colocar os pontos e traçar as ligações manualmente. A vista em planta e a vista 3D mostram os pontos e traçados da camada selecionada. As mudanças entram no histórico e são guardadas com o projeto, incluindo nos ficheiros `.casovara`.
@@ -77,7 +79,7 @@ Para acrescentar outro fornecedor, registe as categorias em `public/catalog-plug
 
 ## Assistente de projeto
 
-Abra **Assistente IA** no editor e descreva uma casa ou uma alteração à planta aberta. O assistente usa as ferramentas de desenho da aplicação para criar uma proposta editável. Reveja a planta por piso, as alterações e os avisos. **Aplicar à planta** guarda a alteração no histórico do editor, onde pode usar **Desfazer**. Com a opção **Experimentar um T3**, este fluxo funciona localmente com um exemplo predefinido.
+Abra **Assistente IA** no editor e descreva uma casa ou uma alteração à planta aberta. Em **Rever proposta**, arraste o cursor **Antes/Depois** para comparar as duas plantas à mesma escala. Escolha o piso e a camada para rever a arquitetura, a laje ou a rede de instalações. Pode usar as setas do teclado com o cursor focado. **Aplicar à planta** guarda a alteração no histórico do editor, onde pode usar **Desfazer**. Com a opção **Experimentar um T3**, este fluxo funciona localmente com um exemplo predefinido.
 
 Para pedidos em linguagem natural, configure `OPENAI_API_KEY` no ambiente do servidor. O modelo predefinido é `gpt-4.1-mini` e pode ser escolhido com `CASOVARA_OPENAI_MODEL`. Para carregar estas variáveis de um ficheiro `.env` local ignorado pelo Git, arranque com `node --env-file=.env server.js`. Por predefinição, o endpoint de IA paga só fica ativo em localhost. Num alojamento com acesso controlado, pode ativá-lo com `CASOVARA_AI_PUBLIC=1`. Só ao enviar um pedido é que o assistente partilha o texto, o contexto da conversa e o resumo da geometria com a OpenAI. [Documentação da API e das ferramentas](https://developers.openai.com/api/docs/guides/function-calling)
 
@@ -87,13 +89,15 @@ O servidor expõe MCP por Streamable HTTP em `http://127.0.0.1:3000/mcp`. Para c
 
 | Ferramenta | Ação |
 | --- | --- |
-| `casovara_create_plan` | Criar uma planta editável com pisos, divisões, paredes, vãos e cobertura. |
+| `casovara_create_plan` | Criar uma planta editável com pisos, divisões, paredes, vãos, lajes e cobertura. |
 | `casovara_edit_plan` | Aplicar um lote de alterações à cópia de um projeto fornecido. |
-| `casovara_inspect_plan` | Obter IDs, geometria, esquemas de instalações, estimativa indicativa e avisos. |
+| `casovara_inspect_plan` | Obter IDs, geometria, configuração da laje por piso, esquemas de instalações, estimativa indicativa e avisos. |
 | `casovara_design_services` | Gerar e editar pontos e traçados de instalações por especialidade e piso. |
 | `casovara_plan_construction` | Gerar ou ajustar tarefas, dependências, equipas e calendário do plano de obra. |
 
 Os clientes externos fornecem o JSON do projeto nas ferramentas de edição e inspeção. O recurso MCP Apps permite rever a planta por piso e exportar `.casovara` para **Importar projeto** no planeador. Em navegadores com WebMCP, as ferramentas da página podem inspecionar a planta aberta e preparar propostas para revisão no editor. [Especificação MCP Apps](https://apps.extensions.modelcontextprotocol.io/api/documents/overview.html) · [WebMCP no Chromium](https://developer.chrome.com/docs/modern-web-guidance/guides/webmcp/webmcp)
+
+Para alterar a espessura da laje pelo MCP, use `{ "op": "set_level", "levelId": "identificador-do-piso", "slab": { "thickness": 0.22 } }` em `casovara_edit_plan`. O modo e o perímetro existentes são preservados. A camada **Laje** da pré-visualização mostra a área ocupada pela laje e a espessura escolhida.
 
 Para gerar eletricidade e águas por MCP, envie `operations: [{ "op": "generate", "systems": ["electrical", "plumbing"] }]` com o `project`. Use `levelIds` para limitar aos pisos pretendidos e `replace: true` para substituir esquemas existentes. Para alterações, inspecione os identificadores da rede e use a operação `edit` com a especialidade, `levelId` e `changes`. O Assistente IA usa as mesmas operações e permite comparar a proposta por camada antes de a aplicar.
 

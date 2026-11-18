@@ -15,6 +15,9 @@
 .cv-studio[data-tool=select] .cv-draft svg[data-rotating=true] * { cursor: grabbing; }
 .cv-rotation-hint { margin-block: .5rem .8rem; font-size: .79rem; }
 .cv-studio[data-tool=select] .cv-draft .cv-plan-wall:not(.cv-plan-wall-active):hover .cv-plan-wall-line { stroke: #8d553b; }
+.cv-studio[data-tool=select] .cv-draft [data-slab-outline] { cursor: pointer; }
+.cv-studio[data-tool=slab][data-slab-drawing=false] .cv-draft > svg[data-role=plan]:not([data-space-pan=true], [data-panning=true]) { cursor: default; }
+.cv-slab-panel [data-action="draw-slab"] { width: 100%; }
 .cv-studio .cv-draft svg[data-space-pan=true],
 .cv-studio .cv-draft svg[data-space-pan=true] * { cursor: grab; }
 .cv-studio .cv-draft svg[data-panning=true],

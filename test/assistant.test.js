@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createDesignAssistant } from '../design-assistant.js';
+import { comparisonLevelPairs, comparisonViewport } from '../public/builder-assistant.js';
 import { registerBuilderTools } from '../public/builder-webmcp.js';
 import { makeTemplate } from '../public/templates.js';
 import { generateConstructionPlan } from '../public/construction-tasks.js';
@@ -16,6 +17,30 @@ function exampleInput() {
 function reply(output) {
   return new Response(JSON.stringify({ output }), { status: 200, headers: { 'Content-Type': 'application/json' } });
 }
+
+test('The comparison pairs retained floors by ID and keeps added and removed floors available', () => {
+  const base = { levels: [{ id: 'ground' }, { id: 'removed' }, { id: 'retained' }] };
+  const proposed = { levels: [{ id: 'ground' }, { id: 'retained' }, { id: 'added' }] };
+  const pairs = comparisonLevelPairs(base, proposed);
+  assert.deepEqual(pairs.map(({ before, after }) => [before?.id, after?.id]), [
+    ['ground', 'ground'], ['retained', 'retained'], [undefined, 'added'], ['removed', undefined],
+  ]);
+  const [replacement] = comparisonLevelPairs(base, { levels: [{ id: 'new-ground' }] });
+  assert.equal(replacement.before.id, 'ground');
+  assert.equal(replacement.after.id, 'new-ground');
+});
+
+test('Both drawings share the same bounds across moved geometry and a standalone slab', () => {
+  const before = { rooms: [{ x: -4, y: 1, w: 4, h: 5 }], walls: [], items: [] };
+  const after = { rooms: [], items: [], walls: [], slab: { mode: 'custom', thickness: .22,
+    footprint: { x: 2, y: -2, width: 6, depth: 3 },
+  } };
+  const viewport = comparisonViewport(before, after);
+  assert.equal(viewport.width, 12);
+  assert.equal(viewport.height, 8);
+  assert.deepEqual(comparisonViewport(after, before), viewport);
+  assert.deepEqual(comparisonViewport(null, after), comparisonViewport({ rooms: [], walls: [], items: [] }, after));
+});
 
 test('Local T3 example uses the same drawing tools and is available without a model key', async () => {
   const assistant = createDesignAssistant({ apiKey: '', allowRemote: false });

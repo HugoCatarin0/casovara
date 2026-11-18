@@ -277,48 +277,144 @@
   gap: .35rem;
   margin-bottom: .48rem;
 }
-.cva-switch {
-  display: flex;
-  align-items: center;
-  gap: .18rem;
-  border: 1px solid #d2e0e9;
-  border-radius: .45rem;
-  padding: .15rem;
-  background: #eaf2f7;
+.cva-split-controls:not(:has(> :not([hidden]))) {
+  display: none;
 }
-.cva-switch button,
 .cva-split-controls select {
-  min-height: 1.95rem;
+  min-height: 2.1rem;
   padding: .24rem .45rem;
-  border: 1px solid transparent;
+  border: 1px solid var(--cva-line);
   border-radius: .32rem;
-  background: transparent;
+  background: #fff;
   color: #395870;
   font-size: .76rem;
   font-weight: 620;
-}
-.cva-switch button[aria-pressed="true"] {
-  border-color: #cbdce8;
-  background: #fff;
-  color: #204561;
-}
-.cva-split-controls select {
   min-width: 0;
-  max-width: 47%;
-  border-color: var(--cva-line);
-  background: #fff;
+  max-width: calc(50% - .18rem);
+}
+.cva-split-controls select:last-child {
+  margin-inline-start: auto;
 }
 .cva-preview {
+  --cva-split: 50%;
+  --cva-thumb-size: 2.75rem;
+  position: relative;
+  isolation: isolate;
   display: grid;
   place-items: center;
   min-height: 8.75rem;
+  height: min(36dvh, 18rem);
   border: 1px solid #d1e2ed;
-  border-radius: .35rem;
+  border-radius: .42rem;
   margin-bottom: .5rem;
   background-color: #f5f9fc;
   background-image: radial-gradient(#cbdae6 1px, transparent 1px);
   background-size: 13px 13px;
   overflow: hidden;
+}
+.cva-comparison-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.cva-comparison-before {
+  clip-path: inset(0 calc(100% - var(--cva-split)) 0 0);
+}
+.cva-comparison-after {
+  clip-path: inset(0 0 0 var(--cva-split));
+}
+.cva-comparison-layer svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.cva-comparison-range {
+  position: absolute;
+  z-index: 1;
+  inset-block: 0;
+  left: calc(var(--cva-thumb-size) / -2);
+  width: calc(100% + var(--cva-thumb-size));
+  height: 100%;
+  appearance: none;
+  padding: 0;
+  margin: 0;
+  border: 0;
+  opacity: 0;
+  cursor: ew-resize;
+  touch-action: pan-y;
+}
+.cva-comparison-range::-webkit-slider-runnable-track { height: 100%; }
+.cva-comparison-range::-moz-range-track { height: 100%; }
+.cva-comparison-range::-webkit-slider-thumb {
+  appearance: none;
+  width: var(--cva-thumb-size);
+  height: 100%;
+}
+.cva-comparison-range::-moz-range-thumb {
+  width: var(--cva-thumb-size);
+  height: 100%;
+  border: 0;
+}
+.cva-preview:has(.cva-comparison-range:focus-visible) {
+  outline: 2px solid #157a8b;
+  outline-offset: 2px;
+}
+.cva-comparison-divider {
+  position: absolute;
+  inset-block: 0;
+  left: var(--cva-split);
+  width: 2px;
+  background: #fff;
+  box-shadow: 0 0 0 1px #24455c9f;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+.cva-comparison-handle {
+  position: absolute;
+  left: clamp(1.26rem, var(--cva-split), calc(100% - 1.26rem));
+  top: 50%;
+  display: grid;
+  place-items: center;
+  width: 2.35rem;
+  height: 2.35rem;
+  box-sizing: border-box;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  background: var(--cva-action);
+  box-shadow: 0 2px 8px #132e4a50;
+  color: #fff;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.cva-panel .cva-comparison-side {
+  position: absolute;
+  z-index: 2;
+  top: .45rem;
+  left: .45rem;
+  display: grid;
+  place-items: center;
+  min-height: 2.1rem;
+  padding: .22rem .55rem;
+  border: 1px solid #cbdce8;
+  border-radius: .36rem;
+  background: #f8fbfd;
+  color: #244d6b;
+  font-size: .75rem;
+  font-weight: 680;
+}
+.cva-comparison-side[data-compare="after"] {
+  left: auto;
+  right: .45rem;
+}
+.cva-comparison-side[aria-pressed="true"] {
+  background: var(--cva-action);
+  color: #fff;
+}
+.cva-comparison-side small {
+  color: inherit;
+  font-size: .67rem;
+  line-height: 1;
+  font-weight: 500;
 }
 .cva-service-legend {
   display: flex;
@@ -335,12 +431,6 @@
 .cva-construction { margin-top: .6rem; border: 1px solid var(--cva-line); border-radius: .45rem; padding: .6rem; background: #edf4f8; }
 .cva-construction h4 { font-size: .84rem; margin: 0 0 .3rem; }
 .cva-construction p { font-size: .76rem; line-height: 1.45; color: #395870; margin: .18rem 0; }
-.cva-preview svg {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  height: min(32dvh, 15rem);
-}
 .cva-empty-preview {
   margin: .8rem;
   color: var(--cva-muted);
@@ -473,6 +563,9 @@
   .cva-proposal-actions button {
     min-height: 2.75rem;
   }
+  .cva-panel .cva-comparison-side {
+    min-height: 2.75rem;
+  }
 }
 
 @media (max-width: 360px) {
@@ -482,6 +575,9 @@
   }
   .cva-split-controls select {
     max-width: 100%;
+  }
+  .cva-split-controls select:last-child {
+    margin-inline-start: 0;
   }
   .cva-proposal-actions {
     flex-wrap: wrap;

@@ -127,6 +127,7 @@ test('Projects persist as private files and survive a new server instance', asyn
   project.constructionPlan = generateConstructionPlan(project, { startDate: '2027-03-01' });
   const floor = project.levels[0];
   floor.services = { plumbing: generateServices(floor, 'plumbing'), electrical: generateServices(floor, 'electrical', { phase: 'three' }) };
+  floor.slab = { mode: 'custom', thickness: .245, footprint: { x: -.3, y: -.2, width: 9.4, depth: 6.8 } };
   const invalid = await api('/api/projects', 'POST', { ...project, levelId: 'absent' }, visitor);
   assert.equal(invalid.status, 422);
   const created = await api('/api/projects', 'POST', project, visitor);
@@ -140,6 +141,7 @@ test('Projects persist as private files and survive a new server instance', asyn
   assert.equal(updated.createdAt, original.createdAt);
   assert.equal(updated.name, 'Casa de teste');
   assert.deepEqual(updated.levels[0].services, floor.services);
+  assert.deepEqual(updated.levels[0].slab, floor.slab);
   assert.deepEqual(updated.constructionPlan, project.constructionPlan);
   const stored = await readdir(join(dir, visitor.split('=')[1]));
   assert.deepEqual(stored, [original.id + '.json']);

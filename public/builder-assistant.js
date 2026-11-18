@@ -2,6 +2,7 @@ import { elements, levelBounds, projectArea, roomStyles } from './builder-engine
 import { formatNumber } from './core.js';
 import { normalizeBuildingServices, resolveServiceNode, serviceNodeSymbol, serviceRunPoints, serviceSystems } from './building-services.js';
 import { normalizeConstructionSchedule, scheduleConstruction } from './construction-schedule.js';
+import { slabFor, slabFootprints, slabOutline } from './slab.js';
 
 const copy = {
   pt: {
@@ -22,7 +23,9 @@ const copy = {
     prompt: 'Pedido para o assistente', placeholder: 'Ex.: desenha uma casa térrea de 110 m² com três quartos…',
     send: 'Enviar', stop: 'Interromper', working: 'A preparar a resposta…', applying: 'A aplicar…',
     you: 'Tu', assistant: 'Assistente', stopped: 'Pedido interrompido.', ready: 'Proposta pronta para rever.',
-    proposal: 'Rever proposta', current: 'Planta atual', suggested: 'Proposta', floor: 'Piso a pré-visualizar',
+    proposal: 'Rever proposta', before: 'Antes', after: 'Depois', floor: 'Piso a pré-visualizar',
+    comparison: 'Comparar a planta atual e a proposta', noFloor: 'Sem piso', noSlab: 'Sem laje', slab: 'Laje', slabs: 'Lajes',
+    slabChanges: { added: 'Adicionadas', changed: 'Alteradas', removed: 'Removidas' },
     area: 'Área interior', units: 'm²', levels: 'Pisos', rooms: 'Divisões', walls: 'Paredes', items: 'Objetos e vãos',
     services: 'Pontos e traçados', layers: 'Camada da proposta', architecture: 'Arquitetura',
     construction: 'Plano de obra', noConstruction: 'Esta versão ainda não tem um plano de obra.',
@@ -57,7 +60,8 @@ const copy = {
     prompt: 'Request for the assistant', placeholder: 'E.g. draw a 110 m² single-storey house with three bedrooms…',
     send: 'Send', stop: 'Stop', working: 'Preparing the response…', applying: 'Applying…',
     you: 'You', assistant: 'Assistant', stopped: 'Request stopped.', ready: 'Your proposal is ready to review.',
-    proposal: 'Review proposal', current: 'Current plan', suggested: 'Proposal', floor: 'Storey to preview',
+    proposal: 'Review proposal', before: 'Before', after: 'After', floor: 'Storey to preview',
+    comparison: 'Compare the current plan and proposal', noFloor: 'No storey', noSlab: 'No slab', slab: 'Slab', slabs: 'Slabs',
     area: 'Internal area', units: 'm²', levels: 'Storeys', rooms: 'Rooms', walls: 'Walls', items: 'Objects and openings',
     services: 'Points and routes', layers: 'Proposal layer', architecture: 'Architecture',
     construction: 'Construction programme', noConstruction: 'There is no construction programme in this version.',
@@ -82,6 +86,7 @@ const iconPaths = {
   send: '<path d="m4 11 16-7-7 16-2.5-6.5L4 11Zm6.5 2.5L20 4"/>',
   layers: '<path d="m12 3 9 5-9 5-9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/>',
   check: '<path d="m5 12 4 4L19 6"/>',
+  compare: '<path d="m10 8-5 5 5 5m6-10 5 5-5 5"/>',
 };
 const icon = (name, size = 18) => `<svg aria-hidden="true" width="${size}" height="${size}" viewBox="0 0 26 26" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">${iconPaths[name]}</svg>`;
 const namespace = 'http://www.w3.org/2000/svg';
@@ -111,11 +116,15 @@ function comparePlans(base, next) {
     walls: ['x1', 'y1', 'x2', 'y2', 'thickness', 'spec'],
     items: ['type', 'x', 'y', 'width', 'depth', 'angle', 'opening'],
   };
-  return [...lists, 'services'].map((kind) => {
-    const entries = (project) => new Map((project?.levels ?? []).flatMap((level) => kind !== 'services'
-      ? level[kind].map((item) => [item.id, JSON.stringify([level.id, compareKey(item, fields[kind])])])
-      : Object.entries(normalizeBuildingServices(level.services, level)).flatMap(([system, net]) => ['nodes', 'runs'].flatMap((type) =>
-        (net?.[type] ?? []).map((item) => [`${level.id}:${system}:${type}:${item.id}`, JSON.stringify(item)])))));
+  return [...lists, 'slabs', 'services'].map((kind) => {
+    const entries = (project) => new Map((project?.levels ?? []).flatMap((level) => {
+      if (kind === 'slabs') {
+        return slabFootprints(level).length ? [[level.id, JSON.stringify(slabFor(level))]] : [];
+      }
+      if (kind === 'services') return Object.entries(normalizeBuildingServices(level.services, level)).flatMap(([system, net]) =>
+        ['nodes', 'runs'].flatMap((type) => net[type].map((item) => [`${level.id}:${system}:${type}:${item.id}`, JSON.stringify(item)])));
+      return level[kind].map((item) => [item.id, JSON.stringify([level.id, compareKey(item, fields[kind])])]);
+    }));
     const before = entries(base);
     const after = entries(next);
     const added = [...after.keys()].filter((id) => !before.has(id));
@@ -123,6 +132,38 @@ function comparePlans(base, next) {
     const changed = [...after.keys()].filter((id) => before.has(id) && before.get(id) !== after.get(id));
     return { kind, added, removed, changed };
   });
+}
+
+export function comparisonLevelPairs(base, proposed) {
+  const before = base?.levels ?? [];
+  const after = proposed.levels;
+  const beforeById = new Map(before.map((floor) => [floor.id, floor]));
+  const replacement = !after.some(({ id }) => beforeById.has(id));
+  const used = new Set();
+  const pairs = after.map((floor, index) => {
+    const previous = replacement ? before[index] : beforeById.get(floor.id);
+    if (previous) used.add(previous.id);
+    return { id: floor.id, before: previous, after: floor };
+  });
+  return pairs.concat(before.filter(({ id }) => !used.has(id)).map((floor) => ({ id: floor.id, before: floor })));
+}
+
+function hasPreviewGeometry(level) {
+  return Boolean(level && (lists.some((list) => level[list].length) ||
+    Object.values(level.services ?? {}).some((network) => network?.nodes?.length) || slabFor(level).mode === 'custom'));
+}
+
+export function comparisonViewport(before, after) {
+  const bounds = [before, after].filter(hasPreviewGeometry).map((level) => levelBounds({
+    ...level, measurements: [], services: normalizeBuildingServices(level.services, level),
+  }));
+  if (!bounds.length) return { width: 10, height: 7, viewBox: '-5 -3.5 10 7' };
+  const x = Math.min(...bounds.map((bounds) => bounds.x));
+  const y = Math.min(...bounds.map((bounds) => bounds.y));
+  const width = Math.max(...bounds.map((bounds) => bounds.x + bounds.width)) - x;
+  const height = Math.max(...bounds.map((bounds) => bounds.y + bounds.height)) - y;
+  const gap = Math.min(4, Math.max(.5, Math.max(width, height) * .08));
+  return { width, height, viewBox: `${x - gap} ${y - gap} ${width + 2 * gap} ${height + 2 * gap}` };
 }
 
 function svgNode(parent, tag, attributes, content) {
@@ -133,38 +174,40 @@ function svgNode(parent, tag, attributes, content) {
   return element;
 }
 
-function previewPlan(container, level, copy, differences, proposed, isPortuguese, system) {
+function previewPlan(container, level, viewport, copy, differences, proposed, isPortuguese, system) {
   container.replaceChildren();
-  if (!level || !lists.some((list) => level[list].length) && !Object.keys(level.services ?? {}).length) {
-    const message = document.createElement('p');
-    message.className = 'cva-empty-preview';
-    message.textContent = copy.emptyPlan;
-    container.append(message);
-    return;
-  }
-  const fallback = { ...level, measurements: [] };
-  const { x, y, width, height } = levelBounds(fallback);
-  const gap = Math.min(4, Math.max(.5, Math.max(width, height) * .08));
+  if (!hasPreviewGeometry(level)) return;
+  const { viewBox, width, height } = viewport;
   const svg = svgNode(container, 'svg', {
-    viewBox: `${x - gap} ${y - gap} ${width + 2 * gap} ${height + 2 * gap}`,
-    role: 'img', 'aria-label': `${proposed ? copy.suggested : copy.current} · ${level.name}`,
+    viewBox, role: 'img', 'aria-label': `${proposed ? copy.after : copy.before} · ${level.name}`,
   });
   const highlight = Object.fromEntries(differences.map((row) => [
     row.kind,
     new Set(proposed ? [...row.added, ...row.changed] : row.removed),
   ]));
   const strokeFor = (kind, entity, normal) => highlight[kind].has(entity.id) ? (proposed ? '#14796f' : '#9a492e') : normal;
+  const slabLayer = system === 'slab';
+  const footprints = slabLayer || slabFor(level).mode === 'custom' ? slabFootprints(level) : [];
+  for (const { x, y, width, depth } of footprints) {
+    svgNode(svg, 'rect', { x, y, width, height: depth, fill: '#b4c9dd', 'fill-opacity': slabLayer ? .54 : .34 });
+  }
   for (const room of level.rooms) {
     svgNode(svg, 'rect', {
       x: room.x, y: room.y, width: room.w, height: room.h,
-      fill: roomStyles[room.type]?.fill ?? '#e5edf2', stroke: strokeFor('rooms', room, '#a4b4bf'), 'stroke-width': .04,
+      fill: roomStyles[room.type]?.fill ?? '#e5edf2', 'fill-opacity': slabLayer ? .23 : 1,
+      stroke: strokeFor('rooms', room, '#a4b4bf'), 'stroke-width': .04,
     });
   }
   for (const wall of level.walls) {
     svgNode(svg, 'line', {
       x1: wall.x1, y1: wall.y1, x2: wall.x2, y2: wall.y2,
-      stroke: strokeFor('walls', wall, '#243c51'), 'stroke-width': wall.thickness,
+      stroke: strokeFor('walls', wall, '#243c51'), 'stroke-opacity': slabLayer ? .45 : 1, 'stroke-width': wall.thickness,
     });
+  }
+  if (footprints.length) {
+    svgNode(svg, 'path', { d: slabOutline(footprints).map(([x1, y1, x2, y2]) => `M${x1} ${y1}L${x2} ${y2}`).join(''),
+      fill: 'none', stroke: strokeFor('slabs', level, '#3b6791'), 'stroke-width': slabLayer ? 2 : 1,
+      'stroke-dasharray': '5 3', 'vector-effect': 'non-scaling-stroke' });
   }
   for (const item of level.items) {
     const category = elements[item.type];
@@ -264,14 +307,19 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       <section class="cva-proposal" data-cva="proposal" aria-labelledby="cv-assistant-proposal" hidden>
         <header class="cva-proposal-head"><div>${icon('layers', 17)}<h3 id="cv-assistant-proposal">${t.proposal}</h3></div><strong data-cva="delta"></strong></header>
         <div class="cva-split-controls">
-          <div class="cva-switch" role="group" aria-label="${t.proposal}">
-            <button type="button" data-compare="current" aria-pressed="false">${t.current}</button>
-            <button type="button" data-compare="suggested" aria-pressed="true">${t.suggested}</button>
-          </div>
           <select data-cva="level" aria-label="${t.floor}"></select>
           <select data-cva="layer" aria-label="${t.layers}" hidden></select>
         </div>
-        <div class="cva-preview" data-cva="preview"></div>
+        <div class="cva-preview" data-cva="preview">
+          <div class="cva-comparison-layer cva-comparison-before" data-cva="before-preview"></div>
+          <div class="cva-comparison-layer cva-comparison-after" data-cva="after-preview"></div>
+          <p class="cva-empty-preview" data-cva="empty-preview" hidden>${t.emptyPlan}</p>
+          <input type="range" class="cva-comparison-range" data-cva="compare" min="0" max="100" value="50" aria-label="${t.comparison}">
+          <div class="cva-comparison-divider" aria-hidden="true"></div>
+          <span class="cva-comparison-handle" aria-hidden="true">${icon('compare', 22)}</span>
+          <button type="button" class="cva-comparison-side" data-compare="before" aria-pressed="false">${t.before}<small data-cva="before-detail"></small></button>
+          <button type="button" class="cva-comparison-side" data-compare="after" aria-pressed="false">${t.after}<small data-cva="after-detail"></small></button>
+        </div>
         <ul class="cva-service-legend" data-cva="service-legend" hidden></ul>
         <dl class="cva-metrics" data-cva="metrics"></dl>
         <section class="cva-construction" data-cva="construction" hidden></section>
@@ -304,9 +352,8 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
   let request = null;
   let applying = false;
   let proposal = null;
-  let compare = 'suggested';
+  let showingBeforeSummary = false;
   let activeLevelId = null;
-  let activeLevelIndex = 0;
   let activeLayer = '';
   let returnFocus = null;
   let previousProject = null;
@@ -390,7 +437,7 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
   function showLastContent() {
     if (!panel.open) return;
     const scroll = $('scroll');
-    if (proposal) $('proposal').scrollIntoView({ block: 'nearest' });
+    if (proposal) $('proposal').scrollIntoView({ block: 'start' });
     else scroll.scrollTop = scroll.scrollHeight;
   }
 
@@ -410,41 +457,9 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
     return pending;
   }
 
-  function renderComparison() {
-    if (!proposal) return;
-    const next = proposal.project;
-    const current = proposal.base;
-    const isSuggested = compare === 'suggested';
-    const view = isSuggested ? next : current;
+  function renderReviewSummary(before) {
+    const view = before ? proposal.base : proposal.project;
     const levels = view?.levels ?? [];
-    const level = levels.find(({ id }) => id === activeLevelId) ?? levels[activeLevelIndex] ?? levels[0];
-    if (level) {
-      activeLevelId = level.id;
-      activeLevelIndex = levels.indexOf(level);
-    }
-    const picker = $('level');
-    picker.replaceChildren(...levels.map(({ id, name }) => new Option(name || t.floor, id, false, id === level?.id)));
-    picker.hidden = levels.length < 2;
-    panel.querySelectorAll('[data-compare]').forEach((button) => {
-      button.setAttribute('aria-pressed', String(button.dataset.compare === compare));
-      button.disabled = button.dataset.compare === 'current' && !current;
-    });
-    const layerPicker = $('layer');
-    const language = isPortuguese ? 'pt' : 'en';
-    layerPicker.replaceChildren(new Option(t.architecture, '', false, !activeLayer), ...proposal.layers.map((id) =>
-      new Option(serviceSystems[id][language], id, false, activeLayer === id)));
-    layerPicker.hidden = !proposal.layers.length;
-    previewPlan($('preview'), level, t, proposal.differences, isSuggested, isPortuguese, activeLayer);
-    const mediaUsed = new Set(level?.services?.[activeLayer]?.runs?.map(({ medium }) => medium));
-    const legend = $('service-legend');
-    legend.replaceChildren(...Object.entries(serviceSystems[activeLayer]?.media ?? {}).filter(([id]) => mediaUsed.has(id)).map(([, entry]) => {
-      const line = document.createElement('li');
-      const swatch = document.createElement('span');
-      swatch.style.backgroundColor = entry.color;
-      line.append(swatch, entry[language]);
-      return line;
-    }));
-    legend.hidden = !legend.childElementCount;
     const area = view ? projectArea(view) : 0;
     $('metrics').replaceChildren(...[[t.area, `${number(area)} ${t.units}`], [t.levels, String(levels.length)], [t.rooms, String(levels.reduce((sum, floor) => sum + floor.rooms.length, 0))]].map(([name, amount]) => {
       const section = document.createElement('div');
@@ -455,7 +470,66 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       section.append(label, value);
       return section;
     }));
-    renderConstruction(isSuggested ? proposal.construction?.suggested : proposal.construction?.current);
+    renderConstruction(before ? proposal.construction?.current : proposal.construction?.suggested);
+  }
+
+  function setComparison(value, refreshSummary = false) {
+    const control = $('compare');
+    control.value = value;
+    const percent = control.valueAsNumber;
+    $('preview').style.setProperty('--cva-split', `${percent}%`);
+    control.setAttribute('aria-valuetext', `${t.before} ${percent}% · ${t.after} ${100 - percent}%`);
+    const before = percent === 100;
+    $('before-preview').setAttribute('aria-hidden', String(percent === 0));
+    $('after-preview').setAttribute('aria-hidden', String(before));
+    panel.querySelector('[data-compare="before"]').setAttribute('aria-pressed', String(before));
+    panel.querySelector('[data-compare="after"]').setAttribute('aria-pressed', String(percent === 0));
+    if (proposal && (refreshSummary || before !== showingBeforeSummary)) {
+      showingBeforeSummary = before;
+      renderReviewSummary(before);
+    }
+  }
+
+  function renderComparison() {
+    if (!proposal) return;
+    const pairs = proposal.levels;
+    const level = pairs.find(({ id }) => id === activeLevelId) ?? pairs[0];
+    activeLevelId = level.id;
+    const picker = $('level');
+    picker.replaceChildren(...pairs.map(({ id, before, after }) => {
+      const name = (after ?? before).name || t.floor;
+      return new Option(after ? name : `${name} · ${t.before}`, id, false, id === activeLevelId);
+    }));
+    picker.hidden = pairs.length < 2;
+    const layerPicker = $('layer');
+    const language = isPortuguese ? 'pt' : 'en';
+    layerPicker.replaceChildren(new Option(t.architecture, '', false, !activeLayer), ...proposal.layers.map((id) =>
+      new Option(id === 'slab' ? t.slab : serviceSystems[id][language], id, false, activeLayer === id)));
+    layerPicker.hidden = !proposal.layers.length;
+    const { before, after } = level;
+    const viewport = comparisonViewport(before, after);
+    previewPlan($('before-preview'), before, viewport, t, proposal.differences, false, isPortuguese, activeLayer);
+    previewPlan($('after-preview'), after, viewport, t, proposal.differences, true, isPortuguese, activeLayer);
+    $('empty-preview').hidden = hasPreviewGeometry(before) || hasPreviewGeometry(after);
+    for (const [side, floor] of [['before', before], ['after', after]]) {
+      const detail = $(side + '-detail');
+      detail.textContent = '';
+      if (!floor) detail.textContent = t.noFloor;
+      else if (activeLayer === 'slab') detail.textContent = slabFootprints(floor).length
+        ? `${number(slabFor(floor).thickness * 100)} cm` : t.noSlab;
+      detail.hidden = !detail.textContent;
+    }
+    const mediaUsed = new Set([before, after].flatMap((floor) => (floor?.services?.[activeLayer]?.runs ?? []).map(({ medium }) => medium)));
+    const legend = $('service-legend');
+    legend.replaceChildren(...Object.entries(serviceSystems[activeLayer]?.media ?? {}).filter(([id]) => mediaUsed.has(id)).map(([, entry]) => {
+      const line = document.createElement('li');
+      const swatch = document.createElement('span');
+      swatch.style.backgroundColor = entry.color;
+      line.append(swatch, entry[language]);
+      return line;
+    }));
+    legend.hidden = !legend.childElementCount;
+    setComparison($('compare').value, true);
   }
 
   function renderProposal() {
@@ -466,7 +540,8 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
     $('delta').textContent = roundedDelta ? `${roundedDelta > 0 ? '+' : '−'}${number(Math.abs(roundedDelta))} ${t.units}` : '';
     $('changes').replaceChildren(...proposal.differences.filter((row) => ['added', 'changed', 'removed'].some((key) => row[key].length)).map((row) => {
       const line = document.createElement('p');
-      line.textContent = `${t[row.kind]} · ${['added', 'changed', 'removed'].filter((key) => row[key].length).map((key) => `${t[key]} ${row[key].length}`).join(' · ')}`;
+      const labels = row.kind === 'slabs' ? t.slabChanges ?? t : t;
+      line.textContent = `${t[row.kind]} · ${['added', 'changed', 'removed'].filter((key) => row[key].length).map((key) => `${labels[key]} ${row[key].length}`).join(' · ')}`;
       return line;
     }));
     const warnings = getWarnings(proposal.analysis);
@@ -488,15 +563,20 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
 
   function adopt(project, { base = snapshot(), analysis } = {}) {
     if (!validPlan(project)) return false;
+    const levels = comparisonLevelPairs(base, project);
     const layers = serviceLayers(base, project);
     activeLayer = layers.find((id) => project.levels.some((floor) => JSON.stringify(floor.services?.[id]) !==
       JSON.stringify(base?.levels.find((previous) => previous.id === floor.id)?.services?.[id]))) ?? '';
+    if (levels.some(({ before, after }) => slabFootprints(before).length || slabFootprints(after).length)) {
+      layers.unshift('slab');
+      if (!activeLayer && levels.some(({ before, after }) => (before?.slab || after?.slab) &&
+        JSON.stringify(slabFor(before)) !== JSON.stringify(slabFor(after)))) activeLayer = 'slab';
+    }
     const construction = JSON.stringify(project.constructionPlan) !== JSON.stringify(base?.constructionPlan)
       ? { current: constructionTimeline(base), suggested: constructionTimeline(project) } : null;
-    proposal = { project, base, baseKey: JSON.stringify(base), analysis, differences: comparePlans(base, project), layers, construction, stale: false };
-    compare = 'suggested';
-    activeLevelIndex = Math.max(0, project.levels.findIndex(({ id }) => id === project.levelId));
-    activeLevelId = project.levels[activeLevelIndex].id;
+    proposal = { project, base, baseKey: JSON.stringify(base), analysis, differences: comparePlans(base, project), levels, layers, construction, stale: false };
+    $('compare').value = '50';
+    activeLevelId = project.levelId;
     updateStale();
     renderProposal();
     return true;
@@ -635,14 +715,15 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       appendMessage('assistant', t.discarded, false);
       renderProposal();
     } else if (button.dataset.compare) {
-      compare = button.dataset.compare;
-      renderComparison();
+      const target = button.dataset.compare === 'before' ? 100 : 0;
+      setComparison($('compare').valueAsNumber === target ? 50 : target);
     } else if (Object.hasOwn(button.dataset, 'example')) {
       prompt.value = t.prompts[Number(button.dataset.example)][1];
       synchronize();
       prompt.focus();
     }
   }, { signal });
+  $('compare').addEventListener('input', (event) => setComparison(event.target.value), { signal });
   $('level').addEventListener('change', (event) => {
     activeLevelId = event.target.value;
     renderComparison();

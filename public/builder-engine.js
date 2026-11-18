@@ -4,6 +4,7 @@ import { normalizeBuildingServices, resolveServiceNode } from './building-servic
 import { normalizeConstructionSchedule } from './construction-schedule.js';
 import { elements, normalizeObjectCatalogRef } from './object-catalog.js';
 import { groundShadow, lightSurface, simulatorDefaults, sunSurfaceColor, sunVector } from './simulator.js';
+import { normalizeSlab, slabFor, slabFootprints, slabLimits, slabOutline } from './slab.js';
 import { effectiveWallHeight, openingVertical, wallAppearance, wallBaseOffset } from './wall-spec.js';
 
 export { elements } from './object-catalog.js';
@@ -127,6 +128,7 @@ export function normalizeProject(input, systemIds, isPt) {
       id: uniqueId(measure.id, used), x1: numeric(measure.x1, 0), y1: numeric(measure.y1, 0), x2: numeric(measure.x2, 0), y2: numeric(measure.y2, 0),
     })),
     ...(Object.hasOwn(level, 'services') ? { services: level.services } : {}),
+    ...(Object.hasOwn(level, 'slab') ? { slab: normalizeSlab(level.slab) } : {}),
   }));
   if (!levels.length) throw new Error('Invalid project');
   for (const level of levels) {
@@ -169,6 +171,11 @@ export function findWall(location, walls, threshold = 0.55, openingWidth = 0) {
 export function levelBounds(level) {
   const points = [];
   for (const { x, y, w, h } of level.rooms) points.push({ x, y }, { x: x + w, y: y + h });
+  const slab = slabFor(level);
+  if (slab.mode === 'custom') {
+    const { x, y, width, depth } = slab.footprint;
+    points.push({ x, y }, { x: x + width, y: y + depth });
+  }
   for (const { x1, y1, x2, y2 } of [...level.walls, ...level.measurements]) points.push({ x: x1, y: y1 }, { x: x2, y: y2 });
   for (const { x, y, width, depth } of level.items) {
     const radius = Math.hypot(width, depth) / 2;
@@ -223,8 +230,8 @@ export function modelFaces(project, levelId, cutaway, {
   const faces = [];
   const serviceFaces = [];
   const displayedServices = new Set(services);
-  const storeySlabDepth = .17;
   const ceilingSlabDepth = .06;
+  const slabs = new Map();
   let owner = null;
   const isSelected = () => owner && owner.kind === selected?.kind && owner.id === selected.id && owner.levelId === levelId;
   function face(points, fill, opacity = 1, { invert = false, preserve = false } = {}) {
@@ -251,6 +258,38 @@ export function modelFaces(project, levelId, cutaway, {
 
   function surfaceRect(x, y, width, depth, z, fill, preserve = false) {
     if (width > 0 && depth > 0) face(rect(x, y, width, depth).map(([a, b]) => [a, b, z]), fill, 1, { preserve });
+  }
+
+  function slabGeometry(level) {
+    if (!slabs.has(level)) slabs.set(level, { ...slabFor(level), footprints: slabFootprints(level) });
+    return slabs.get(level);
+  }
+
+  function structuralSlab(level, slab, z) {
+    owner = { kind: 'slab', id: level.id, levelId: level.id };
+    const highlighted = isSelected();
+    const bottom = z - slab.thickness;
+    const topColor = highlighted ? '#d3a77b' : '#b1aea4';
+    const sideColor = highlighted ? '#b78861' : '#918a7c';
+    for (const { x, y, width, depth } of slab.footprints) {
+      const points = rect(x, y, width, depth);
+      face(points.map(([a, b]) => [a, b, z]), topColor);
+      face(points.toReversed().map(([a, b]) => [a, b, bottom]), sideColor);
+    }
+    for (const [x1, y1, x2, y2] of slabOutline(slab.footprints)) {
+      face([[x1, y1, bottom], [x2, y2, bottom], [x2, y2, z], [x1, y1, z]], sideColor);
+    }
+  }
+
+  function finishedRoom(room, slab) {
+    if (slab.mode === 'none') return null;
+    if (slab.mode === 'auto') return room;
+    const footprint = slab.footprint;
+    const x = Math.max(room.x, footprint.x);
+    const y = Math.max(room.y, footprint.y);
+    const w = Math.min(room.x + room.w, footprint.x + footprint.width) - x;
+    const h = Math.min(room.y + room.h, footprint.y + footprint.depth) - y;
+    return w > 0 && h > 0 ? { ...room, x, y, w, h } : null;
   }
 
   function floorFinish(room, z, finish, color) {
@@ -453,6 +492,8 @@ export function modelFaces(project, levelId, cutaway, {
   for (const level of visibleLevels) {
     const sectioned = cutaway && level === topLevel;
     const baseFaces = faces.length;
+    const slab = slabGeometry(level);
+    structuralSlab(level, slab, floorZ);
     const openings = new Map();
     for (const item of level.items) {
       const type = elements[item.type];
@@ -478,8 +519,16 @@ export function modelFaces(project, levelId, cutaway, {
       owner = { kind: 'rooms', id: room.id, levelId: level.id };
       const finish = room.finish ?? ({ living: 'wood', bedroom: 'wood', kitchen: 'ceramic', bath: 'ceramic', circulation: 'stone', outdoor: 'concrete' })[room.type];
       const color = isSelected() ? '#d3a77b' : (settings ? studioFloors[finish] : finishes[room.finish]) ?? (roomStyles[room.type] ?? roomStyles.living).floor;
-      prism(rect(room.x, room.y, room.w, room.h), floorZ - storeySlabDepth, storeySlabDepth, [color, '#958977', '#817764']);
-      floorFinish(room, floorZ, finish, color);
+      if (room.type === 'outdoor') {
+        const thickness = slabLimits.defaultThickness;
+        prism(rect(room.x, room.y, room.w, room.h), floorZ - thickness, thickness, [color, '#958977', '#817764']);
+      } else {
+        const floor = finishedRoom(room, slab);
+        if (floor) {
+          surfaceRect(floor.x, floor.y, floor.w, floor.h, floorZ + .001, color);
+          floorFinish(floor, floorZ, finish, color);
+        }
+      }
       if (!cutaway && showRoof && level === topLevel && level.ceiling && room.type !== 'outdoor') {
         owner = null;
         prism(rect(room.x, room.y, room.w, room.h), floorZ + level.height - ceilingSlabDepth, ceilingSlabDepth, ['#edebdf', '#dcd7c9', '#d3ccbd']);
@@ -525,9 +574,13 @@ export function modelFaces(project, levelId, cutaway, {
     }
     if (displayedServices.size) {
       const upperLevel = project.levels[project.levels.indexOf(level) + 1];
+      const upperSlab = upperLevel && slabGeometry(upperLevel);
       const ceilingHeightAt = ({ x, y }) => {
-        const covered = upperLevel?.rooms?.some((room) => x >= room.x && x <= room.x + room.w && y >= room.y && y <= room.y + room.h);
-        return floorZ + level.height - (covered ? storeySlabDepth : ceilingSlabDepth);
+        const covered = upperSlab?.footprints.some((area) => x >= area.x && x <= area.x + area.width && y >= area.y && y <= area.y + area.depth);
+        const underTerrace = upperLevel?.rooms?.some((room) => room.type === 'outdoor' && x >= room.x && x <= room.x + room.w && y >= room.y && y <= room.y + room.h);
+        const underside = Math.max(covered ? upperSlab.thickness : 0, underTerrace ? slabLimits.defaultThickness : 0,
+          level.ceiling ? ceilingSlabDepth : 0) || ceilingSlabDepth;
+        return floorZ + level.height - underside;
       };
       appendModelServices(serviceFaces, level, floorZ, displayedServices, selectedService, ceilingHeightAt);
     }
@@ -585,7 +638,7 @@ export function modelFaces(project, levelId, cutaway, {
     const pad = 1.05;
     const ground = -.19;
     const shadowColor = '#53563f';
-    const exposed = faces.filter(({ owner }) => !owner || owner.kind === 'walls');
+    const exposed = faces.filter(({ owner }) => !owner || owner.kind === 'walls' || owner.kind === 'slab');
     let left = Infinity, right = -Infinity, front = Infinity, back = -Infinity;
     for (const { points } of faces) {
       for (const [x, y] of points) {

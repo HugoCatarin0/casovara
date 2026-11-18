@@ -290,7 +290,7 @@ test('3D ceiling fixtures hang below the slab overhead and remain visible when t
   const ceilingHeight = (faces, id) => Math.max(...faces.filter(({ owner }) => owner?.id === id)
     .flatMap(({ points }) => points.map((point) => point[2])));
   const allFloors = modelFaces(project, ground.id, false, { ...options, scope: 'all' });
-  const slabUnderside = Math.min(...allFloors.filter(({ owner }) => owner?.kind === 'rooms' && owner.levelId === upper.id)
+  const slabUnderside = Math.min(...allFloors.filter(({ owner }) => owner?.kind === 'slab' && owner.levelId === upper.id)
     .flatMap(({ points }) => points.map((point) => point[2])));
   const mountedHeight = ceilingHeight(allFloors, 'covered-light');
   assert.ok(mountedHeight < slabUnderside);
@@ -303,4 +303,40 @@ test('3D ceiling fixtures hang below the slab overhead and remain visible when t
   const scene = compileScene(visibleGround);
   const frame = cameraFrame(scene, { ...camera, elevation: 70 }, width, height);
   assert.equal(pickScene(scene, frame, ...projectVertex(frame, 1, 1, mountedHeight))?.id, 'covered-light');
+
+  upper.slab = { mode: 'custom', thickness: .3, footprint: { x: 3, y: 0, width: 2, depth: 3 } };
+  const changed = modelFaces(project, ground.id, false, options);
+  assert.ok(Math.abs(ceilingHeight(changed, 'open-light') - (ground.height - .3 - .006)) < 1e-9);
+  assert.ok(ceilingHeight(changed, 'covered-light') > mountedHeight);
+  upper.slab.thickness = .05;
+  const thinner = modelFaces(project, ground.id, false, options);
+  assert.ok(Math.abs(ceilingHeight(thinner, 'open-light') - (ground.height - .05 - .006)) < 1e-9);
+});
+
+test('A custom slab extends past the rooms and removes flooring over uncovered areas', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const ground = project.levels[0];
+  ground.rooms.push(makeRoom('living', 0, 0, 4, 4), makeRoom('outdoor', 0, 4, 2, 1));
+  ground.slab = { mode: 'custom', thickness: .32, footprint: { x: -1, y: -1, width: 4, depth: 5 } };
+
+  const faces = modelFaces(project, ground.id, false);
+  const slab = faces.filter(({ owner }) => owner?.kind === 'slab');
+  const vertices = slab.flatMap(({ points }) => points);
+  assert.equal(slab.length, 6);
+  assert.equal(Math.min(...vertices.map(([x]) => x)), -1);
+  assert.equal(Math.min(...vertices.map(([, , z]) => z)), -.32);
+  assert.equal(Math.max(...vertices.map(([, , z]) => z)), 0);
+  const finishedFloor = faces.filter(({ owner }) => owner?.id === ground.rooms[0].id);
+  assert.equal(finishedFloor.length, 1);
+  assert.equal(Math.max(...finishedFloor[0].points.map(([x]) => x)), 3);
+
+  const scene = compileScene(faces);
+  const frame = cameraFrame(scene, { ...camera, elevation: 90 }, width, height);
+  assert.deepEqual(pickScene(scene, frame, ...projectVertex(frame, -.5, 2, 0)), {
+    kind: 'slab', id: ground.id, levelId: ground.id,
+  });
+  ground.slab.mode = 'none';
+  const withoutSlab = modelFaces(project, ground.id, false);
+  assert.ok(withoutSlab.every(({ owner }) => owner?.id === ground.rooms[1].id));
+  assert.equal(withoutSlab.length, 5);
 });

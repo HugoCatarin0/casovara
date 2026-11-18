@@ -24,6 +24,32 @@ test('Planning tools describe creation, atomic editing and inspection', () => {
   assert.match(plannerGuide, /metres/);
 });
 
+test('Agents can create and edit a slab on a chosen storey without changing its interior area', () => {
+  const footprint = { x: -1, y: -1, width: 8, depth: 7 };
+  const { project, analysis } = create({ levels: [{
+    id: 'ground', name: 'Rés do chão', rooms: [{ type: 'living', x: 0, y: 0, width: 6, depth: 5 }],
+    slab: { mode: 'custom', thickness: .22, footprint },
+  }] });
+  assert.deepEqual(analysis.levels[0].slab, { mode: 'custom', thickness: .22, footprint });
+  assert.equal(analysis.area, 30);
+  const revised = edit(project, [
+    { op: 'add_level', level: { id: 'above', name: 'Piso 1', rooms: [], slab: { mode: 'none' } } },
+    { op: 'set_level', levelId: 'ground', slab: { thickness: .25, footprint: { depth: 7.5 } } },
+  ]);
+  const slab = revised.project.levels[0].slab;
+  assert.deepEqual(slab, { mode: 'custom', thickness: .25, footprint: { ...footprint, depth: 7.5 } });
+  assert.deepEqual(revised.analysis.levels[1].slab, { mode: 'none', thickness: .17 });
+  assert.equal(revised.analysis.area, 30);
+  assert.equal(project.levels[0].slab.footprint.depth, 7);
+
+  const auto = edit(revised.project, [{ op: 'set_level', slab: { mode: 'auto' } }]);
+  assert.deepEqual(auto.project.levels[0].slab, { ...slab, mode: 'auto' });
+  const customAgain = edit(auto.project, [{ op: 'set_level', slab: { mode: 'custom' } }]);
+  assert.deepEqual(customAgain.project.levels[0].slab, slab);
+  assert.throws(() => edit(project, [{ op: 'set_level', slab: { thickness: .04 } }]), /slab\.thickness/);
+  assert.throws(() => edit(create().project, [{ op: 'set_level', slab: { mode: 'custom' } }]), /slab\.footprint/);
+});
+
 test('Construction tooling generates, inspects and edits an isolated, resource-constrained programme', () => {
   const { project } = create();
   const tool = (operations, current = project) => runDesignTool('casovara_plan_construction', { project: current, operations });

@@ -8,6 +8,7 @@ import { detectLocale, languagePreferences, locales } from './public/locales.js'
 import { systemById } from './public/core.js';
 import { normalizeBuildingServices } from './public/building-services.js';
 import { normalizeConstructionSchedule } from './public/construction-schedule.js';
+import { normalizeSlab } from './public/slab.js';
 import { createDesignAssistant } from './design-assistant.js';
 import { handleMcp } from './mcp-app.js';
 import { createCatalogService } from './catalog-service.js';
@@ -134,8 +135,12 @@ function validateProject(project) {
   if (!levelIds.has(project.levelId)) throw new RequestError(422, 'invalid_project');
   const constructionPlan = normalizeConstructionSchedule(project.constructionPlan);
   if (project.constructionPlan != null && !constructionPlan) throw new RequestError(422, 'invalid_construction_plan');
-  return { ...project, name: project.name.trim(), levels: project.levels.map((level) => Object.hasOwn(level, 'services')
-    ? { ...level, services: normalizeBuildingServices(level.services, level) } : level), ...(constructionPlan ? { constructionPlan } : {}) };
+  const levels = project.levels.map((level) => ({
+    ...level,
+    ...(Object.hasOwn(level, 'services') ? { services: normalizeBuildingServices(level.services, level) } : {}),
+    ...(Object.hasOwn(level, 'slab') ? { slab: normalizeSlab(level.slab) } : {}),
+  }));
+  return { ...project, name: project.name.trim(), levels, ...(constructionPlan ? { constructionPlan } : {}) };
 }
 
 async function readProject(path) {

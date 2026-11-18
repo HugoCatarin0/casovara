@@ -10,6 +10,7 @@ import { estimateProject, formatMoney, formatNumber, projectApi, systems } from 
 import { makeTemplate, templates } from './templates.js';
 import { applyWallAssembly, effectiveWallHeight, getWallSpec, normalizeOpening, normalizeWallSpec, wallAssemblies, wallSpecThickness } from './wall-spec.js';
 import { renderOpeningFields, renderWallInspector, syncWallInspector } from './wall-inspector.js';
+import { normalizeSlab, slabFor, slabFootprints, slabLimits, slabModes, slabOutline } from './slab.js';
 import { compileScene } from './model-renderer.js';
 import { createModelViewer, initialModelCamera, modelImage } from './model-viewer.js';
 import { dimensionLine, draftingBounds, draftingInk, interiorPlanDimensions, lowerFloorReference, openingSymbol, openingTags, openingsIndex, overallPlanDimensions, planPatterns, planRoomFill, selectedWallDimension, technicalWall } from './technical-plan.js';
@@ -50,6 +51,7 @@ const icons = {
   plus: '<path d="M12 5v14M5 12h14"/>',
   minus: '<path d="M5 12h14"/>',
   layers: '<path d="m12 3 9 5-9 5-9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/>',
+  slab: '<path d="m3 9 9-5 9 5-9 5Zm0 0v5l9 5 9-5V9m-9 5v5"/>',
   fit: '<path d="M9 4H4v5m11-5h5v5M4 15v5h5m11-5v5h-5"/><rect x="8" y="8" width="8" height="8" rx="1"/>',
   north: '<path d="m12 3 7 17-7-4-7 4Z"/>',
   settings: '<path d="M4 7h16M4 17h16"/><circle cx="8" cy="7" r="2" fill="currentColor"/><circle cx="16" cy="17" r="2" fill="currentColor"/>',
@@ -123,7 +125,11 @@ const labels = {
   roomTotal: ['Compartimentos', 'Rooms'], wallTotal: ['Comprimento de paredes', 'Wall length'], itemTotal: ['Objetos colocados', 'Objects placed'], openings: ['Vãos', 'Openings'],
   copy: ['Copiar', 'Copy'], csv: ['Descarregar CSV', 'Download CSV'], copied: ['Copiado.', 'Copied.'], copyError: ['Não foi possível copiar.', 'Could not copy.'],
   notesPlaceholder: ['Anote decisões, materiais ou perguntas sobre o projeto.', 'Add decisions, materials, or questions about the project.'], notesLabel: ['Notas do projeto', 'Project notes'],
-  outer: ['Laje', 'Slab'], deck: ['Terraço', 'Terrace'], roof: ['Cobertura', 'Roof'], ceiling: ['Teto', 'Ceiling'], floors: ['Pavimentos', 'Floors'], annotate: ['Anotar', 'Annotate'], visualise: ['Visualizar', 'Visualise'],
+  slab: ['Laje', 'Slab'], slabMode: ['Contorno da laje', 'Slab footprint'], slabAuto: ['Acompanha as divisões interiores', 'Follows indoor rooms'], slabCustom: ['Contorno próprio', 'Custom footprint'], slabNone: ['Sem laje', 'No slab'],
+  slabDraw: ['Desenhar contorno', 'Draw footprint'], slabRedraw: ['Redesenhar contorno', 'Redraw footprint'], slabCancel: ['Cancelar desenho', 'Cancel drawing'],
+  slabFirst: ['Marca um canto da laje na planta.', 'Mark the first slab corner on the plan.'], slabSecond: ['Marca o canto oposto.', 'Mark the opposite corner.'], slabInvalid: ['O contorno ultrapassa os limites do desenho.', 'The footprint is outside the drawing bounds.'],
+  slabX: ['Posição X', 'X position'], slabY: ['Posição Y', 'Y position'],
+  deck: ['Terraço', 'Terrace'], roof: ['Cobertura', 'Roof'], ceiling: ['Teto', 'Ceiling'], floors: ['Pavimentos', 'Floors'], annotate: ['Anotar', 'Annotate'], visualise: ['Visualizar', 'Visualise'],
   image: ['Imagem de referência', 'Reference image'], removeImage: ['Remover imagem de referência', 'Remove reference image'], invalidImage: ['Escolha PNG, JPEG ou WebP até 900 KB.', 'Choose a PNG, JPEG, or WebP up to 900 KB.'],
   camera: ['Guardar vista', 'Save view'], cameraList: ['Vistas guardadas', 'Saved views'], noCameras: ['Guarde uma vista do modelo para a recuperar mais tarde.', 'Save a model view to return to it later.'],
   applyFinish: ['Clique ou toque num compartimento para aplicar o acabamento.', 'Click or tap a room to apply the finish.'], shutter: ['Elementos', 'Elements'], info: ['Informações de projeto', 'Project information'], splitUpdate: ['Dividir compartimento', 'Divide room'], detectRoom: ['Detetar compartimento', 'Detect room'],
@@ -195,6 +201,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   let viewMode = Object.hasOwn(fieldForMode, query.get('view')) ? fieldForMode[query.get('view')] : 'plan';
   let selected = null;
   let pendingPoint = null;
+  let slabDrawing = false;
   let hoverPoint = null;
   let constrainAngle = false;
   let spacePan = false;
@@ -344,7 +351,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
                 <span class="cv-compass" aria-label="${tr('north')}" title="${tr('north')}">${icon('north', 18)}<small>N</small></span>
                 <span class="cv-plan-ruler" data-role="plan-ruler" aria-hidden="true"></span>
               </div>
-              <button class="cv-tool cv-finish-drawing" data-action="finish-drawing" type="button" hidden>${icon('check', 16)}${tr('finishDrawing')}</button>
+              <button class="cv-tool cv-finish-drawing" data-action="finish-drawing" type="button" hidden>${icon('check', 16)}<span>${tr('finishDrawing')}</span></button>
               <div class="cv-zoom">
                 ${toolbarButton('zoom-out', 'minus', 'zoomOut')}<span data-role="zoom">100%</span>${toolbarButton('zoom-in', 'plus', 'zoomIn')}${toolbarButton('fit', 'fit', 'fit')}${toolbarButton('fit-selection', 'select', 'fitSelection', 'disabled')}
               </div>
@@ -460,9 +467,12 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         const proposed = floor.services?.[id];
         return proposed?.nodes.length && JSON.stringify(previous) !== JSON.stringify(proposed);
       }));
+      const activeFloor = viewLevel(candidate, candidate.levelId);
+      const changedSlab = JSON.stringify(slabFor(activeFloor)) !== JSON.stringify(slabFor(viewLevel(project, candidate.levelId)));
       change(() => {
         project = candidate;
         selected = pendingPoint = hoverPoint = drag = null;
+        slabDrawing = false;
         tool = 'select';
         category = 'structure';
         if (changedServices.length) {
@@ -471,6 +481,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
           inspectorTab = 'services';
           inspectorOpen = !compactInspector.matches;
           tool = 'service';
+        } else if (changedSlab) {
+          category = 'floors';
+          inspectorTab = 'properties';
+          inspectorOpen = !compactInspector.matches;
+          tool = 'slab';
         }
         if (viewMode === 'view3d') viewMode = 'split';
         resetCamera();
@@ -506,6 +521,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         return;
       }
       if (picked.levelId !== project.levelId) switchLevel(picked.levelId);
+      if (picked.kind === 'slab') { setTool('slab'); return; }
       selected = { kind: picked.kind, id: picked.id };
       inspectorOpen = true;
       setActiveShape();
@@ -525,6 +541,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
 
   function showServices() {
     selected = pendingPoint = hoverPoint = null;
+    slabDrawing = false;
     tool = 'service';
     inspectorTab = 'services';
     inspectorOpen = true;
@@ -572,6 +589,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     project = from.pop();
     selected = null;
     pendingPoint = null;
+    slabDrawing = false;
     servicesEditor.clear();
     markChanged();
     render();
@@ -620,6 +638,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     newWallAssembly = 'custom';
     drag = null;
     pendingPoint = null;
+    slabDrawing = false;
     history.length = 0;
     future.length = 0;
     setCatalogOpen(false);
@@ -653,7 +672,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   function position(event, raw = false) {
     const p = planPosition(event);
     if (raw || !settings.snap || event.altKey) return p;
-    if (['wall', 'angled', 'room', 'measure'].includes(tool)) {
+    if (['wall', 'angled', 'room', 'slab', 'measure'].includes(tool)) {
       const threshold = Math.min(.38, worldPixel() * (event.pointerType === 'touch' ? 18 : 12));
       const nearest = nearestEndpoint(p, threshold);
       if (nearest) return nearest;
@@ -699,6 +718,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     return { ...result, snap: Math.hypot(end.x - result.x, end.y - result.y) < .015 ? end.snap : 'axis' };
   }
   function updateMode() {
+    if (viewMode === 'view3d' && slabDrawing) {
+      pendingPoint = hoverPoint = null;
+      slabDrawing = false;
+      inspectorOpen = true;
+    }
     view.dataset.mode = viewMode;
     for (const button of root.querySelectorAll('[data-action^="mode:"]')) button.setAttribute('aria-pressed', String(button.dataset.action === `mode:${viewMode}`));
     root.querySelector('[data-action="cutaway"]').setAttribute('aria-pressed', String(cutaway));
@@ -725,6 +749,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
   function updateTools() {
     studio.dataset.tool = tool;
+    studio.dataset.slabDrawing = String(slabDrawing);
     studio.dataset.inspector = String(inspectorOpen);
     const editingServices = tool === 'service';
     const showingServices = inspectorOpen && !catalogOpen && inspectorTab === 'services';
@@ -747,11 +772,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const groups = category === 'structure' ? structureGroups : [['navigateGroup', ['select', 'pan']], [category, active.tools]];
     const renderTool = (id) => {
       const setting = toolSettings[id] || {
-        slab: ['room', 'outer'], deck: ['room', 'deck'], image: ['image', 'image'],
+        slab: ['slab', 'slab'], deck: ['room', 'deck'], image: ['image', 'image'],
         view3d: ['cube', 'view3d'], camera: ['camera', 'camera'], cameraList: ['layers', 'cameraList'], export: ['export', 'export'], exportPng: ['image', 'exportPng'], autoDimensions: ['measure', 'autoDimensions'],
       }[id];
       const action = ['levels', 'image', 'view3d', 'camera', 'cameraList', 'export', 'exportPng', 'autoDimensions', 'roof', 'ceiling', 'flooring'].includes(id) ? id : `tool:${id}`;
-      const pressed = tool === id || (id === 'ceiling' && !!level().ceiling) || (id === 'roof' && !['none', undefined].includes(level().roof)) || (id === 'slab' && tool === 'room' && roomType === 'circulation') || (id === 'deck' && tool === 'room' && roomType === 'outdoor');
+      const pressed = tool === id || (id === 'ceiling' && !!level().ceiling) || (id === 'roof' && !['none', undefined].includes(level().roof)) || (id === 'deck' && tool === 'room' && roomType === 'outdoor');
       return toolbarButton(action, ...setting, `aria-pressed="${pressed}"`, shortToolLabels[id] ?? true, shortcuts[id]);
     };
     toolRow.innerHTML = groups.map(([label, tools]) => `<div class="cv-tool-group" role="group" aria-label="${tr(label)}"><span class="cv-tool-group-label" aria-hidden="true">${tr(label)}</span><div>${tools.map(renderTool).join('')}</div></div>`).join('');
@@ -760,7 +785,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     root.querySelector('[data-action="undo"]').disabled = !history.length;
     root.querySelector('[data-action="redo"]').disabled = !future.length;
     fitSelected.disabled = !selected;
-    const hint = pendingPoint ? ['wall', 'angled'].includes(tool) ? 'chainMore' : 'pointSecond' :
+    const hint = tool === 'slab' ? (slabDrawing ? (pendingPoint ? 'slabSecond' : 'slabFirst') : 'slabMode') :
+      pendingPoint ? ['wall', 'angled'].includes(tool) ? 'chainMore' : 'pointSecond' :
       ['room', 'wall', 'angled', 'measure'].includes(tool) ? 'pointFirst' :
       ['door', 'window'].includes(tool) || (tool === 'item' && elements[objectType].opening) ? 'placeOpening' :
       tool === 'item' ? 'placeItem' : tool === 'label' || tool === 'north' ? 'placeLabel' :
@@ -768,7 +794,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const instruction = viewMode !== 'view3d' && editingServices ? servicesEditor.hint() : tr(viewMode === 'view3d' ? 'orbitHint' : hint);
     root.querySelector('[data-role="hint"]').textContent = viewMode !== 'view3d' && tool === 'item'
       ? `${catalogPlacement?.catalogRef.name ?? localized(elements[objectType])} · ${instruction}` : instruction;
-    root.querySelector('[data-action="finish-drawing"]').hidden = !pendingPoint;
+    const finish = root.querySelector('[data-action="finish-drawing"]');
+    finish.hidden = !pendingPoint && !slabDrawing;
+    finish.lastElementChild.textContent = tr(slabDrawing ? 'slabCancel' : 'finishDrawing');
     renderPlanOptions();
   }
 
@@ -789,7 +817,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const size = wallThickness();
     const step = gridStep();
     const nextKey = [tool, size, step, roomType, settings.snap, newWallAssembly].join(':');
-    options.hidden = !wall && tool !== 'room' && tool !== 'measure';
+    options.hidden = !wall && !['room', 'measure'].includes(tool) && !slabDrawing;
     if (options.hidden || nextKey === planOptionsKey) return;
     planOptionsKey = nextKey;
     const assemblies = Object.keys(wallAssemblies).filter((id) => id !== 'custom').sort((a, b) => Number(b === project.systemId) - Number(a === project.systemId));
@@ -817,7 +845,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   function currentModelScene() {
     const rotation = drag?.handle === 'rotate' && drag.preview !== drag.original ? drag.preview : null;
     const movingService = drag?.type === 'service-node' && drag.moved ? drag.preview : null;
-    const key = [project, revision, project.levelId, cutaway, showRoof, modelScope, selected?.kind, selected?.id, simulator, rotation, servicesEditor.key, movingService];
+    const picked = tool === 'slab' ? { kind: 'slab', id: project.levelId } : selected;
+    const key = [project, revision, project.levelId, cutaway, showRoof, modelScope, picked?.kind, picked?.id, simulator, rotation, servicesEditor.key, movingService];
     if (!sceneCache?.key.every((value, index) => value === key[index])) {
       let preview = project;
       if (rotation || movingService) {
@@ -831,7 +860,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         }
         preview = { ...project, levels: project.levels.map((floor) => floor === current ? { ...floor, ...changes } : floor) };
       }
-      const faces = modelFaces(preview, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected, simulator,
+      const faces = modelFaces(preview, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected: picked, simulator,
         services: servicesEditor.layers, selectedService: servicesEditor.selection() });
       sceneCache = { key, scene: compileScene(faces) };
     }
@@ -993,6 +1022,19 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       items: current.items.map((item) => moved('items', item)), measurements: current.measurements.map((item) => moved('measurements', item)),
       annotations: (current.annotations ?? []).map((item) => moved('annotations', item)) };
   }
+  function drawSlabPlan(floor, unit, forExport) {
+    const { mode } = slabFor(floor);
+    const active = tool === 'slab' && !forExport;
+    if (!active && mode !== 'custom') return '';
+    const footprints = slabFootprints(floor);
+    if (!footprints.length) return '';
+    const outline = slabOutline(footprints).map(([x1, y1, x2, y2]) => `M${x1} ${y1}L${x2} ${y2}`).join('');
+    const hit = !forExport && !active ? `<path data-slab-outline d="${outline}" fill="none" stroke="transparent" stroke-width="${unit * 12}" pointer-events="stroke"/>` : '';
+    return `<g data-plan-slab="${mode}" pointer-events="none">
+      ${active ? footprints.map(({ x, y, width, depth }) => `<rect x="${x}" y="${y}" width="${width}" height="${depth}" fill="#35759d" opacity="${slabDrawing ? '.07' : '.12'}"/>`).join('') : ''}
+      <path d="${outline}" fill="none" stroke="#28688f" stroke-width="${unit * (active ? 1.8 : 1.1)}" stroke-dasharray="${unit * 6} ${unit * 3}"/>
+      ${hit}</g>`;
+  }
   function draftLayer(forExport = false, unit = .022, compact = false, current = planFloor(forExport)) {
     const activeShape = (kind, id) => !forExport && selected?.kind === kind && selected.id === id;
     const image = current.image;
@@ -1018,7 +1060,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const activeWall = technical && !forExport && selected?.kind === 'walls' ? visibleWalls.find((wall) => selected.id === wall.id) : null;
     const activeDimension = activeWall ? selectedWallDimension(activeWall, unit, n) : '';
     const annotations = (current.annotations ?? []).map((item) => annotationShape(item, activeShape('annotations', item.id))).join('');
-    return `${technical ? planPatterns() : ''}${background}${rooms}${reference}${outline}${walls}${items}${captions}${tags?.markup ?? ''}${inside}${measures}${annotations}${activeDimension}`;
+    return `${technical ? planPatterns() : ''}${background}${rooms}${drawSlabPlan(current, unit, forExport)}${reference}${outline}${walls}${items}${captions}${tags?.markup ?? ''}${inside}${measures}${annotations}${activeDimension}`;
   }
 
   function roomHandles(room) {
@@ -1074,22 +1116,23 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
   function drawPreview(unit) {
     if (drag?.snap) return drawMarker(drag.snap, unit);
-    if (spacePan || !hoverPoint || ['select', 'pan'].includes(tool)) return '';
+    if (spacePan || !hoverPoint || ['select', 'pan'].includes(tool) || tool === 'slab' && !slabDrawing) return '';
     const current = level();
     if (pendingPoint) {
       const start = pendingPoint;
       const end = maybeSnapEnd(start, hoverPoint);
       let shape;
-      if (tool === 'room') {
+      if (['room', 'slab'].includes(tool)) {
         const x = Math.min(start.x, end.x);
         const y = Math.min(start.y, end.y);
         const w = Math.abs(start.x - end.x);
         const h = Math.abs(start.y - end.y);
-        const edge = `stroke="#ad6246" stroke-width="${unit * 1.6}" stroke-dasharray="${unit * 6} ${unit * 4}"`;
-        shape = `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="#bd7952" fill-opacity=".14" ${edge}/>`;
+        const color = tool === 'slab' ? '#28688f' : '#ad6246';
+        const edge = `stroke="${color}" stroke-width="${unit * 1.6}" stroke-dasharray="${unit * 6} ${unit * 4}"`;
+        shape = `<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${color}" fill-opacity=".14" ${edge}/>`;
         if (w > unit * 40 && h > unit * 24) {
           const size = unit * 13;
-          shape += `<text x="${x + w / 2}" y="${y + h / 2}" dy=".32em" text-anchor="middle" font-size="${size}" font-weight="680" fill="#823f27" paint-order="stroke" stroke="#fffaf0" stroke-width="${size * .3}" stroke-linejoin="round">${n(w)} × ${n(h)} m</text>`;
+          shape += `<text x="${x + w / 2}" y="${y + h / 2}" dy=".32em" text-anchor="middle" font-size="${size}" font-weight="680" fill="${tool === 'slab' ? color : '#823f27'}" paint-order="stroke" stroke="#fffaf0" stroke-width="${size * .3}" stroke-linejoin="round">${n(w)} × ${n(h)} m</text>`;
         }
       } else {
         const wallTool = ['wall', 'angled'].includes(tool);
@@ -1149,13 +1192,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (scene) {
       const current = planFloor();
       planScene.innerHTML = draftLayer(false, unit, rect.width < 535, current);
-      root.querySelector('[data-role="empty"]').hidden = tool !== 'select' || !!(current.rooms.length || current.walls.length || current.items.length || current.image || current.annotations?.length || servicesEditor.layers.some((id) => current.services?.[id]?.nodes.length));
+      root.querySelector('[data-role="empty"]').hidden = tool !== 'select' || !!(current.rooms.length || current.walls.length || current.items.length || current.image || current.annotations?.length || slabFor(current).mode === 'custom' || servicesEditor.layers.some((id) => current.services?.[id]?.nodes.length));
       const moving = drag?.type === 'service-node' && drag.moved ? { selection: drag.selection, point: drag.preview } : null;
       planServices.innerHTML = renderServicesPlan(current, { locale, layers: servicesEditor.layers, unit, selection: servicesEditor.selection(), move: moving, interactive: tool === 'service' });
     }
     const handles = selectedHandles(unit);
     planOverlay.innerHTML = `<g pointer-events="none">${tool === 'service' ? servicesEditor.preview(hoverPoint, unit, hoverPoint?.raw, serviceTolerance(hoverPoint?.pointerType, unit)) : drawPreview(unit)}</g>${handles}`;
     if (tool === 'service') plane.setAttribute('aria-description', servicesEditor.hint());
+    else if (slabDrawing) plane.setAttribute('aria-description', tr(pendingPoint ? 'slabSecond' : 'slabFirst'));
     else if (selected?.kind === 'items' && handles) plane.setAttribute('aria-description', tr('rotationHint'));
     else plane.removeAttribute('aria-description');
   }
@@ -1193,7 +1237,26 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     return field(name, key, typeof value === 'number' ? Number(value.toFixed(3)) : value, { type: 'number', unit, min, max, step });
   }
   function infoRows(rows) { return `<dl class="cv-metrics">${rows.map(([label, value]) => `<div><dt>${str(label)}</dt><dd>${str(value)}</dd></div>`).join('')}</dl>`; }
+  function slabArea(floor) {
+    return `${n(slabFootprints(floor).reduce((total, { width, depth }) => total + width * depth, 0))} m²`;
+  }
+  function slabPanel() {
+    const floor = level();
+    const { mode, thickness, footprint } = slabFor(floor);
+    const modes = [['auto', 'slabAuto'], ['custom', 'slabCustom'], ['none', 'slabNone']];
+    const options = modes.map(([key, label]) => `<option value="${key}" ${key === mode ? 'selected' : ''}>${tr(label)}</option>`).join('');
+    const { minThickness, maxThickness, minSpan, maxSpan, coordinate } = slabLimits;
+    const dimensions = mode === 'custom' ? `<div class="cv-row">${numberField('slab:width', 'width', footprint.width, 'm', minSpan, maxSpan, 'any')}${numberField('slab:depth', 'depth', footprint.depth, 'm', minSpan, maxSpan, 'any')}</div>
+      <div class="cv-row">${numberField('slab:x', 'slabX', footprint.x, 'm', -coordinate, coordinate, 'any')}${numberField('slab:y', 'slabY', footprint.y, 'm', -coordinate, coordinate, 'any')}</div>` : '';
+    return `<section class="cv-panel-section cv-slab-panel"><p class="cv-kicker">${str(floor.name)}</p><h2>${tr('slab')}</h2>
+      <label class="cv-field"><span>${tr('slabMode')}</span><select data-field="slab:mode">${options}</select></label>
+      ${mode !== 'none' ? numberField('slab:thickness', 'thickness', thickness, 'm', minThickness, maxThickness, 'any') : ''}
+      ${dimensions}${mode !== 'none' ? `<dl class="cv-metrics"><div><dt>${tr('roomArea')}</dt><dd data-role="slab-area">${slabArea(floor)}</dd></div></dl>` : ''}
+      <button class="cv-button cv-subtle" type="button" data-action="draw-slab">${icon('slab', 17)}${tr(mode === 'custom' ? 'slabRedraw' : 'slabDraw')}</button>
+    </section>`;
+  }
   function propertiesPanel() {
+    if (tool === 'slab') return slabPanel();
     const record = entity();
     const current = level();
     if (record) {
@@ -1320,7 +1383,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     ['tool:room', 'room', 'room'], ['tool:detect', 'fit', 'detectRoom'], ['tool:divide', 'room', 'splitUpdate'], ['tool:door', 'door', 'door'], ['tool:window', 'window', 'window'], ['catalog', 'furnish', 'furnish'],
     ['image', 'image', 'image'], ['levels', 'layers', 'levels'], ['mode:plan', 'plan', 'plan'], ['mode:view3d', 'cube', 'view3d'], ['mode:split', 'split', 'split'], ['cameraList', 'camera', 'cameraList'],
     ['tool:measure', 'measure', 'measure'], ['tool:wallChain', 'measure', 'wallChain'], ['autoDimensions', 'measure', 'autoDimensions'], ['tool:label', 'text', 'label'], ['tool:north', 'north', 'north'],
-    ['flooring', 'grid', 'flooring'], ['ceiling', 'layers', 'ceiling'], ['roof', 'roof', 'roof'], ['tab:costs', 'file', 'costs'], ['tab:data', 'file', 'data'], ['tab:notes', 'edit', 'notes'],
+    ['tool:slab', 'slab', 'slab'], ['flooring', 'grid', 'flooring'], ['ceiling', 'layers', 'ceiling'], ['roof', 'roof', 'roof'], ['tab:costs', 'file', 'costs'], ['tab:data', 'file', 'data'], ['tab:notes', 'edit', 'notes'],
     ['report', 'file', 'report'], ['export', 'export', 'export'], ['share-link', 'external', 'shareLink'], ['settings', 'settings', 'settings'], ['help', 'info', 'help'],
     ['/guias', 'external', 'guides'], ['/calculadoras', 'external', 'calculators'],
   ];
@@ -1405,6 +1468,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     project.levelId = id;
     selected = null;
     pendingPoint = null;
+    slabDrawing = false;
     servicesEditor.clear();
     resetCamera();
     markChanged();
@@ -1417,21 +1481,84 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     selected = null;
     pendingPoint = null;
     hoverPoint = null;
+    slabDrawing = false;
     if (id !== 'item') catalogPlacement = null;
-    if (id === 'slab' || id === 'deck') {
-      roomType = id === 'slab' ? 'circulation' : 'outdoor';
+    if (id === 'deck') {
+      roomType = 'outdoor';
       id = 'room';
     }
     tool = id;
-    if (viewMode === 'view3d' && id !== 'select') viewMode = 'split';
+    if (viewMode === 'view3d' && !['select', 'slab'].includes(id)) viewMode = 'split';
+    if (id === 'slab') {
+      category = 'floors';
+      inspectorTab = 'properties';
+      inspectorOpen = true;
+    }
     if (['item', 'door', 'window'].includes(id)) inspectorTab = 'properties';
     render();
   }
   function finishDrawing() {
     pendingPoint = hoverPoint = null;
+    if (slabDrawing) {
+      slabDrawing = false;
+      inspectorOpen = true;
+    }
     updateTools();
     renderInspector();
-    paintPlan(false);
+    paintPlan(tool === 'slab');
+  }
+  function beginSlabDrawing() {
+    selected = pendingPoint = hoverPoint = null;
+    slabDrawing = true;
+    inspectorTab = 'properties';
+    inspectorOpen = !compactInspector.matches;
+    if (viewMode === 'view3d') viewMode = 'split';
+    render();
+    plane.focus({ preventScroll: true });
+  }
+  function defaultSlabFootprint(floor) {
+    const regions = slabFootprints({ ...floor, slab: { mode: 'auto' } });
+    if (!regions.length) return { x: 0, y: 0, width: 4, depth: 4 };
+    const x = Math.min(...regions.map((region) => region.x));
+    const y = Math.min(...regions.map((region) => region.y));
+    return { x, y,
+      width: Math.min(slabLimits.maxSpan, Math.max(...regions.map((region) => region.x + region.width)) - x),
+      depth: Math.min(slabLimits.maxSpan, Math.max(...regions.map((region) => region.y + region.depth)) - y),
+    };
+  }
+  function changeSlab(property, input) {
+    const floor = level();
+    const previous = slabFor(floor);
+    const oldValue = previous[property] ?? previous.footprint?.[property];
+    const value = property === 'mode' ? input.value : input.valueAsNumber;
+    if (value === oldValue || (property !== 'mode' && (!input.validity.valid || !Number.isFinite(value)))) {
+      input.value = oldValue;
+      return;
+    }
+    const draft = { ...previous };
+    if (property === 'mode') {
+      if (!slabModes.includes(value)) return;
+      draft.mode = value;
+      if (value === 'custom') draft.footprint ??= defaultSlabFootprint(floor);
+      if (slabDrawing) {
+        pendingPoint = hoverPoint = null;
+        slabDrawing = false;
+      }
+    } else if (property === 'thickness') draft.thickness = value;
+    else draft.footprint = { ...draft.footprint, [property]: value };
+    const next = normalizeSlab(draft);
+    const focused = document.activeElement === input;
+    change(() => { floor.slab = next; }, false);
+    updateTools();
+    if (property === 'mode') {
+      renderInspector(true);
+      if (focused) studioPanel.querySelector('[data-field="slab:mode"]')?.focus({ preventScroll: true });
+    } else {
+      input.value = next[property] ?? next.footprint?.[property] ?? '';
+      const area = studioPanel.querySelector('[data-role="slab-area"]');
+      if (area) area.textContent = slabArea(floor);
+    }
+    paint();
   }
   function zoom(multiplier, location) {
     const before = camera.zoom;
@@ -1484,6 +1611,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         for (const node of nodes) if (node.wall) node.wall.side *= -1;
       }
       if (entry.image) entry.image.x = x(entry.image.x + entry.image.width);
+      if (entry.slab?.footprint) entry.slab.footprint.x = x(entry.slab.footprint.x + entry.slab.footprint.width);
     }
     return state;
   }
@@ -1629,7 +1757,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     render();
   }
   function drawAction(event) {
-    if (tool === 'service') return;
+    if (tool === 'service' || tool === 'slab' && !slabDrawing) return;
     constrainAngle = event.shiftKey;
     const p = position(event);
     const current = level();
@@ -1673,6 +1801,20 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const start = pendingPoint;
     const end = maybeSnapEnd(start, p);
     if (Math.hypot(start.x - end.x, start.y - end.y) < .1) { toast('tooSmall'); return; }
+    if (tool === 'slab') {
+      const size = (a, b) => Number(Math.abs(a - b).toFixed(6));
+      const footprint = { x: Math.min(start.x, end.x), y: Math.min(start.y, end.y), width: size(start.x, end.x), depth: size(start.y, end.y) };
+      if (footprint.width < slabLimits.minSpan || footprint.depth < slabLimits.minSpan) { toast('tooSmall'); return; }
+      const next = normalizeSlab({ ...slabFor(current), mode: 'custom', footprint });
+      if (next.mode !== 'custom') { toast('slabInvalid'); return; }
+      change(() => {
+        current.slab = next;
+        selected = pendingPoint = hoverPoint = null;
+        slabDrawing = false;
+        inspectorOpen = true;
+      });
+      return;
+    }
     if (tool === 'room') {
       const w = Math.abs(start.x - end.x);
       const h = Math.abs(start.y - end.y);
@@ -1801,6 +1943,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const hit = tool === 'select' && !spacePan && event.button === 0 ? selectEntity(event.target) : null;
     if (studioPanel.contains(document.activeElement) && document.activeElement?.matches('input, textarea')) document.activeElement.blur();
     plane.focus({ preventScroll: true });
+    if (!hit && tool === 'select' && !spacePan && event.button === 0 && event.target.closest?.('[data-slab-outline]')) {
+      preventClick = true;
+      setTool('slab');
+      return;
+    }
     const world = position(event, true);
     if (tool === 'pan' || spacePan || event.button === 1) {
       preventClick = true;
@@ -1831,7 +1978,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       renderInspector();
       paintPlan();
       modelPaint();
-    } else if (!pendingPoint && ['room', 'wall', 'angled', 'measure'].includes(tool)) {
+    } else if (!pendingPoint && (slabDrawing || ['room', 'wall', 'angled', 'measure'].includes(tool))) {
       drag = { type: 'draw', origin: position(event), screen: point(event.clientX, event.clientY), moved: false };
     }
   }, listen);
@@ -1894,7 +2041,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         if (drag.kind === 'walls') drag.geometry = connectedGeometry(new Map([[drag.original.id, drag.preview]]));
         schedulePlan(true);
       }
-    } else if (!['select', 'pan'].includes(tool)) {
+    } else if (!['select', 'pan'].includes(tool) && (tool !== 'slab' || slabDrawing)) {
       if (drag?.type === 'draw' && !drag.moved && Math.hypot(event.clientX - drag.screen.x, event.clientY - drag.screen.y) > 6) {
         drag.moved = true;
         pendingPoint = drag.origin;
@@ -1956,7 +2103,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (plane.hasPointerCapture(pointerId)) plane.releasePointerCapture(pointerId);
   }
   plane.addEventListener('contextmenu', (event) => {
-    if (!pendingPoint) return;
+    if (!pendingPoint && !slabDrawing) return;
     event.preventDefault();
     finishDrawing();
   }, listen);
@@ -2160,6 +2307,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         root.querySelector('[data-action="snap-plan"]')?.focus();
         break;
       case 'finish-drawing': finishDrawing(); break;
+      case 'draw-slab': beginSlabDrawing(); break;
       case 'catalog': setCatalogOpen(!catalogOpen, true); break;
       case 'services': {
         if (inspectorOpen && !catalogOpen && inspectorTab === 'services') inspectorOpen = false;
@@ -2226,6 +2374,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
           if (project.levelId === arg) project.levelId = project.levels[0].id;
           selected = null;
           pendingPoint = null;
+          slabDrawing = false;
           resetCamera();
         }) });
         break;
@@ -2485,6 +2634,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const [key, property] = (input.dataset.field ?? '').split(':');
     if (key === 'shape') { shapeChange(property, input); return; }
     if (key === 'wall') { wallSpecChange(property, input); return; }
+    if (key === 'slab') { changeSlab(property, input); return; }
     if (key === 'settings' && Object.hasOwn(settings, property)) {
       if (property === 'drawingStyle' && ['technical', 'furnished'].includes(input.value)) settings.drawingStyle = input.value;
       else if (input.type === 'checkbox') settings[property] = input.checked;
@@ -2618,6 +2768,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
           project.levelId = added.id;
           pendingPoint = null;
           selected = null;
+          slabDrawing = false;
           resetCamera();
         }
       });
@@ -2655,6 +2806,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }, listen);
 
   root.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && event.target.matches?.('input[type="number"][data-field^="slab:"]')) {
+      event.preventDefault();
+      changeSlab(event.target.dataset.field.split(':')[1], event.target);
+      return;
+    }
     if (event.key !== 'Escape' || !catalogOpen || drag?.handle === 'rotate' || root.querySelector('dialog[open]')) return;
     event.preventDefault();
     event.stopPropagation();
@@ -2697,7 +2853,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     } else if (key === 'escape' || key === 'enter' && pendingPoint) {
       if (key === 'escape' && !simulatorPanel.hidden) { setSimulatorOpen(false); simulatorToggle.focus({ preventScroll: true }); }
       else if (key === 'escape' && tool === 'service' && (servicesEditor.mode !== 'select' || servicesEditor.selection())) { servicesEditor.clear(); refreshServices(); }
-      else if (pendingPoint) finishDrawing();
+      else if (pendingPoint || slabDrawing) finishDrawing();
       else setTool('select');
     } else if (key === 'delete' || key === 'backspace') {
       if (tool === 'service' ? servicesEditor.remove() : removeEntity()) event.preventDefault();

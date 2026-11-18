@@ -17,6 +17,7 @@
       --wall: #283a47;
       --door: #8d4d3e;
       --glass: #27638a;
+      --slab: #655386;
     }
     :root[data-theme="dark"] {
       color-scheme: dark;
@@ -29,6 +30,7 @@
       --wall: #e0edf4;
       --door: #f4ac97;
       --glass: #8fd3f8;
+      --slab: #c4acef;
     }
     * { box-sizing: border-box; }
     body { margin: 0; padding: 12px; color: var(--ink); }
@@ -88,6 +90,7 @@
     <section id="construction" hidden></section>
     <footer>
       <ul id="legend" hidden></ul>
+      <p id="slabInfo" class="muted" hidden></p>
       <p id="status" role="status">A aguardar o projeto.</p>
       <section id="checks" hidden>
         <h2 id="checksTitle">Verificação da geometria</h2>
@@ -112,13 +115,14 @@
     const svgNamespace = 'http://www.w3.org/2000/svg';
     const ui = Object.fromEntries([
       'preview', 'title', 'metrics', 'levelField', 'levelLabel', 'levels', 'layerField', 'layerLabel', 'layers', 'legend', 'view', 'construction', 'status',
-      'checks', 'checksTitle', 'checksSummary', 'warnings', 'actions', 'download', 'inspect', 'data', 'dataLabel', 'raw',
+      'checks', 'checksTitle', 'checksSummary', 'warnings', 'actions', 'download', 'inspect', 'data', 'dataLabel', 'raw', 'slabInfo',
     ].map((id) => [id, document.getElementById(id)]));
     const serviceProfile = JSON.parse(document.getElementById('service-palette').textContent.replace('<!-- service palette -->', '{}'));
     const copy = {
       pt: {
         title: 'Pré-visualização da planta', waiting: 'A aguardar o projeto.', level: 'Piso', image: 'Planta do piso',
         layer: 'Camada', architecture: 'Arquitetura',
+        slab: 'Laje', slabAuto: 'Laje automática', slabCustom: 'Laje desenhada', noSlab: 'Sem laje neste piso.',
         construction: 'Plano de obra', critical: 'Caminho crítico das dependências',
         scheduleSummary: (days, saved) => `${days} dias úteis · ${saved} dias úteis ganhos face à sequência`,
         checks: 'Verificação da geometria', download: 'Descarregar projeto', inspect: 'Verificar planta',
@@ -132,6 +136,7 @@
       en: {
         title: 'Floor plan preview', waiting: 'Waiting for the project.', level: 'Storey', image: 'Floor plan',
         layer: 'Layer', architecture: 'Architecture',
+        slab: 'Slab', slabAuto: 'Automatic slab', slabCustom: 'Custom slab', noSlab: 'No slab on this storey.',
         construction: 'Construction programme', critical: 'Dependency critical path',
         scheduleSummary: (days, saved) => `${days} workdays · ${saved} workdays saved against sequential work`,
         checks: 'Geometry check', download: 'Download project', inspect: 'Check plan', data: 'Project file (JSON)',
@@ -222,6 +227,14 @@
       const system = ui.layers.value;
       const service = Object.hasOwn(serviceProfile, system) ? serviceProfile[system] : null;
       const inspection = Array.isArray(analysis?.levels) ? analysis.levels.find((entry) => entry?.id === level.id) : null;
+      const slab = inspection?.slab ?? level.slab;
+      const custom = slab?.mode === 'custom' && finite(slab.footprint, ['x', 'y', 'width', 'depth']) &&
+        slab.footprint.width > 0 && slab.footprint.depth > 0 ? slab.footprint : null;
+      const slabVisible = system === 'slab';
+      const footprint = custom ? [custom] : slab?.mode === 'none' || !slabVisible ? [] :
+        rooms.filter(({ type }) => type !== 'outdoor').map(({ x, y, w, h }) => ({ x, y, width: w, depth: h }));
+      const thickness = Number.isFinite(slab?.thickness) ? slab.thickness : .17;
+      ui.slabInfo.textContent = footprint.length ? `${strings()[custom ? 'slabCustom' : 'slabAuto']} · ${format(thickness * 100)} cm` : strings().noSlab;
       const network = service && (inspection?.services?.[system] ?? level.services?.[system]);
       const nodes = Array.isArray(network?.nodes) ? network.nodes.slice(0, 300).filter((node) => finite(node, ['x', 'y'])) : [];
       const byId = new Map(nodes.map((node) => [node.id, node]));
@@ -231,6 +244,7 @@
       ui.legend.replaceChildren();
       ui.legend.hidden = !runs.length;
       const points = [
+        ...footprint.flatMap(({ x, y, width, depth }) => [[x, y], [x + width, y + depth]]),
         ...rooms.flatMap(({ x, y, w, h }) => [[x, y], [x + w, y + h]]),
         ...walls.flatMap(({ x1, y1, x2, y2 }) => [[x1, y1], [x2, y2]]),
         ...items.flatMap(({ x, y, width, depth }) => {
@@ -265,9 +279,22 @@
       for (const room of rooms) {
         const name = String(room.name || strings().rooms[room.type] || '').slice(0, 75);
         const fill = Object.hasOwn(colors, room.type) ? colors[room.type] : '#bbc9cd';
-        const box = svg('rect', { x: room.x, y: room.y, width: room.w, height: room.h, fill, opacity: .52 });
+        const box = svg('rect', { x: room.x, y: room.y, width: room.w, height: room.h, fill, opacity: slabVisible ? .22 : .52 });
         box.append(svg('title', {}, name));
         ui.view.append(box);
+      }
+      if (footprint.length) {
+        const floorSlab = svg('g', { 'data-layer': 'slab', 'pointer-events': 'none' });
+        floorSlab.append(svg('title', {}, ui.slabInfo.textContent));
+        const fill = svg('g', { fill: 'var(--slab)', opacity: slabVisible ? .27 : .15 });
+        for (const { x, y, width, depth } of footprint) fill.append(svg('rect', { x, y, width, height: depth }));
+        floorSlab.append(fill);
+        if (custom) {
+          const { x, y, width, depth } = custom;
+          floorSlab.append(svg('rect', { x, y, width, height: depth, fill: 'none', stroke: 'var(--slab)',
+            'stroke-width': 1.5, 'stroke-dasharray': '7 4', 'vector-effect': 'non-scaling-stroke' }));
+        }
+        ui.view.append(floorSlab);
       }
 
       const wallById = new Map(walls.map((wall) => [wall.id, wall]));
@@ -416,12 +443,15 @@
       const wanted = initialLayer || ui.layers.value;
       const timeline = analysis?.construction;
       const hasConstruction = Number.isFinite(timeline?.workingDays) && Number.isFinite(timeline?.savedDays) && Array.isArray(timeline?.tasks);
-      ui.layers.replaceChildren(new Option(strings().architecture, ''), ...available.map((id) => new Option(serviceProfile[id][language], id)),
+      const hasSlab = project.levels.some(({ slab, rooms }) => slab || rooms.some((room) => room?.type !== 'outdoor'));
+      ui.layers.replaceChildren(new Option(strings().architecture, ''), ...(hasSlab ? [new Option(strings().slab, 'slab')] : []),
+        ...available.map((id) => new Option(serviceProfile[id][language], id)),
         ...(hasConstruction ? [new Option(strings().construction, 'construction')] : []));
-      ui.layers.value = available.includes(wanted) || hasConstruction && wanted === 'construction' ? wanted : '';
-      ui.layerField.hidden = !available.length && !hasConstruction;
+      ui.layers.value = available.includes(wanted) || hasConstruction && wanted === 'construction' || hasSlab && wanted === 'slab' ? wanted : '';
+      ui.layerField.hidden = !available.length && !hasConstruction && !hasSlab;
       initialLayer = '';
       const constructionVisible = ui.layers.value === 'construction';
+      ui.slabInfo.hidden = ui.layers.value !== 'slab';
       ui.levelField.hidden ||= constructionVisible;
       ui.view.hidden = constructionVisible;
       ui.construction.hidden = !constructionVisible;

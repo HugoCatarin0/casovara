@@ -88,6 +88,7 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
   assert.match(preview.text, /ui\/initialize/);
   assert.match(preview.text, /ui\/notifications\/tool-result/);
   assert.match(preview.text, /service-palette[^>]*>\{"electrical"/);
+  assert.match(preview.text, /new Option\(strings\(\)\.slab, 'slab'\)/);
   const { contents: [guide] } = await call('resources/read', { uri: 'casovara://skills/house-planning' });
   assert.match(guide.text, /casovara_create_plan/);
   assert.equal((await tool('casovara_get_planner_skill', {})).content[0].text, guide.text);
@@ -107,12 +108,17 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
     project, operations: [
       { op: 'set_project', name: 'Casa do Pátio revista', systemId: 'lsf' },
       { op: 'add_furniture', furniture: { type: 'bed', x: 8, y: 2.5 } },
+      { op: 'set_level', slab: { mode: 'custom', thickness: .22, footprint: { x: -1, y: -1, width: 12, depth: 7 } } },
     ],
   });
   assert.equal(edit.structuredContent.project.systemId, 'lsf');
   assert.equal(edit.structuredContent.project.name, 'Casa do Pátio revista');
   assert.ok(edit.structuredContent.project.levels[0].items.some(({ type }) => type === 'bed'));
   assert.ok(!project.levels[0].items.some(({ type }) => type === 'bed'));
+  const revisedSlab = edit.structuredContent.project.levels[0].slab;
+  assert.equal(revisedSlab.thickness, .22);
+  const revisedPlan = await tool(inspect.name, { project: edit.structuredContent.project });
+  assert.deepEqual(revisedPlan.structuredContent.analysis.levels[0].slab, revisedSlab);
   const drawing = await tool('casovara_design_services', {
     project, operations: [{ op: 'generate', systems: ['electrical', 'vmc'], phase: 'three' }],
   });
