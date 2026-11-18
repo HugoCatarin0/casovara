@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { elements, makeItem, makeProject, makeRoom, makeWall, modelFaces } from '../public/builder-engine.js';
+import { elements, makeItem, makeLevel, makeProject, makeRoom, makeWall, modelFaces } from '../public/builder-engine.js';
+import { serviceSystems } from '../public/building-services.js';
 import { cameraFrame, compileScene, pickScene, projectVertex, renderScene } from '../public/model-renderer.js';
+import { createModelViewer } from '../public/model-viewer.js';
 
 const width = 256;
 const height = 192;
@@ -128,4 +130,76 @@ test('Orbit keeps the model fitted and panning and zoom use consistent screen di
   assert.ok(Math.abs(center[0] - (width / 2 + 18)) < 1e-6);
   assert.ok(Math.abs(center[1] - (height / 2 - 12)) < 1e-6);
   assert.ok(Math.abs(projectVertex(orbited, 0, 0, 1)[1] - center[1] - baselineHeight * 1.5) < 1e-6);
+});
+
+test('Dragging the 3D model moves its near side in the same horizontal direction', (t) => {
+  const before = Object.getOwnPropertyDescriptor(globalThis, 'requestAnimationFrame');
+  globalThis.requestAnimationFrame = () => 1;
+  const controller = new AbortController();
+  t.after(() => {
+    controller.abort();
+    if (before) Object.defineProperty(globalThis, 'requestAnimationFrame', before);
+    else delete globalThis.requestAnimationFrame;
+  });
+  const canvas = Object.assign(new EventTarget(), {
+    dataset: {}, focus() {}, setPointerCapture() {},
+    getBoundingClientRect: () => ({ left: 0, top: 0, width, height }),
+  });
+  const scene = compileScene([horizontal('#2070b0', 1)]);
+  const viewer = createModelViewer({ canvas, signal: controller.signal, scene: () => scene, onCamera() {} });
+  const nearX = () => projectVertex(cameraFrame(scene, viewer.camera(), width, height), 0, 2, 1)[0];
+  const pointer = (type, x, y, extra) => canvas.dispatchEvent(Object.assign(new Event(type), {
+    pointerId: 1, button: 0, shiftKey: false, clientX: x, clientY: y, ...extra,
+  }));
+
+  viewer.set({ azimuth: 0, elevation: 33 });
+  const baseline = nearX();
+  pointer('pointerdown', 120, 80);
+  pointer('pointermove', 160, 90);
+  assert.ok(nearX() > baseline);
+  assert.equal(viewer.camera().elevation, 36.1);
+  pointer('pointermove', 80, 80);
+  assert.ok(nearX() < baseline);
+  pointer('pointerup', 80, 80);
+
+  viewer.set({ azimuth: 0, panX: 0, panY: 0 });
+  pointer('pointerdown', 120, 80, { shiftKey: true });
+  pointer('pointermove', 160, 90, { shiftKey: true });
+  assert.equal(viewer.camera().azimuth, 0);
+  assert.equal(viewer.camera().panX, 40 / width);
+  assert.equal(viewer.camera().panY, 10 / height);
+});
+
+test('The 3D installation layer uses chosen systems, storey heights, and pickable typed owners', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const ground = project.levels[0];
+  ground.rooms.push(makeRoom('living', 0, 0, 7, 6));
+  const upper = makeLevel('First floor');
+  upper.rooms.push(makeRoom('living', 0, 0, 7, 6));
+  project.levels.push(upper);
+  const node = (id, kind, x, y) => ({ id, kind, x, y });
+  const network = (a, b, medium) => ({ nodes: [a, b], runs: [{ id: `${a.id}-${b.id}`, medium, from: a.id, to: b.id, points: [{ x: a.x, y: b.y }] }] });
+  ground.services = { electrical: network(node('panel', 'panel', 1, 1), node('lamp', 'light', 4, 4), 'lighting') };
+  upper.services = { plumbing: network(node('cold-valve', 'coldManifold', 1, 1), node('sink', 'sink', 4, 2), 'cold') };
+  const inLayer = (faces) => faces.filter(({ owner }) => owner?.kind.startsWith('service-'));
+  const enabled = (services, extra) => modelFaces(project, upper.id, true, { services, ...extra });
+
+  assert.deepEqual(inLayer(modelFaces(project, upper.id, true)), []);
+  const plumbing = inLayer(enabled(['plumbing']));
+  assert.ok(plumbing.length > 0);
+  assert.ok(plumbing.every(({ owner, points }) => owner.system === 'plumbing' && owner.levelId === upper.id && points.every((point) => point[2] > ground.height)));
+  assert.ok(plumbing.some(({ fill, owner }) => owner.kind === 'service-run' && fill === serviceSystems.plumbing.media.cold.color));
+  const upperOnly = inLayer(enabled(['electrical', 'plumbing'], { scope: 'level' }));
+  assert.ok(upperOnly.every(({ owner }) => owner.levelId === upper.id));
+  const full = inLayer(enabled(['electrical', 'plumbing'], { selectedService: { system: 'electrical', kind: 'node', id: 'lamp', levelId: ground.id } }));
+  const selected = full.filter(({ owner }) => owner.kind === 'service-node' && owner.id === 'lamp');
+  assert.ok(selected.length > 0);
+  assert.ok(Math.min(...selected.flatMap(({ points }) => points.map(([x]) => x))) < 3.9, 'Selection outline is wider than the node');
+
+  const scene = compileScene(modelFaces(project, ground.id, true, { services: ['electrical'] }));
+  const frame = cameraFrame(scene, { ...camera, elevation: 90 }, width, height);
+  const elevation = Math.max(...selected.flatMap(({ points }) => points.map((point) => point[2])));
+  assert.deepEqual(pickScene(scene, frame, ...projectVertex(frame, 4, 4, elevation)), {
+    kind: 'service-node', system: 'electrical', id: 'lamp', levelId: ground.id,
+  });
 });

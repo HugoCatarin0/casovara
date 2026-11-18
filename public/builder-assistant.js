@@ -1,5 +1,6 @@
 import { elements, levelBounds, projectArea, roomStyles } from './builder-engine.js';
 import { formatNumber } from './core.js';
+import { normalizeBuildingServices, serviceRunPoints, serviceSystems } from './building-services.js';
 
 const copy = {
   pt: {
@@ -13,6 +14,7 @@ const copy = {
       ['Casa térrea com três quartos', 'Desenha uma casa térrea T3 com cerca de 110 m², sala e cozinha abertas, duas casas de banho e acesso direto ao exterior.'],
       ['Rever as circulações', 'Analisa a circulação na planta atual e sugere melhorias. Preserva as divisões existentes.'],
       ['Adicionar um escritório', 'Propõe uma forma de criar um escritório na planta atual, com janela e acesso pelo corredor.'],
+      ['Gerar instalações', 'Gera propostas de eletricidade, águas e esgotos, VMC e ar condicionado para a casa atual. Preserva os esquemas que já existirem.'],
     ],
     demo: 'Experimentar um T3', demoRequest: 'Gerar exemplo T3',
     prompt: 'Pedido para o assistente', placeholder: 'Ex.: desenha uma casa térrea de 110 m² com três quartos…',
@@ -20,6 +22,7 @@ const copy = {
     you: 'Tu', assistant: 'Assistente', stopped: 'Pedido interrompido.', ready: 'Proposta pronta para rever.',
     proposal: 'Rever proposta', current: 'Planta atual', suggested: 'Proposta', floor: 'Piso a pré-visualizar',
     area: 'Área interior', units: 'm²', levels: 'Pisos', rooms: 'Divisões', walls: 'Paredes', items: 'Objetos e vãos',
+    services: 'Pontos e traçados', layers: 'Camada da proposta', architecture: 'Arquitetura',
     added: 'Adicionados', changed: 'Alterados', removed: 'Removidos',
     warnings: 'Pontos a rever', emptyPlan: 'Este piso não tem geometria para mostrar.',
     discard: 'Descartar proposta', apply: 'Aplicar à planta', discarded: 'Proposta descartada.',
@@ -43,6 +46,7 @@ const copy = {
       ['Three-bedroom single-storey house', 'Draw a single-storey three-bedroom house of about 110 m², with an open-plan kitchen and living room, two bathrooms, and direct outside access.'],
       ['Review circulation', 'Assess circulation in the current floor plan and suggest improvements. Keep the existing rooms.'],
       ['Add a home office', 'Suggest a way to add a home office to the current floor plan, with a window and access from the hall.'],
+      ['Generate building services', 'Generate electrical, plumbing, VMC ventilation and air-conditioning schemes for the house. Preserve existing schemes.'],
     ],
     demo: 'Try a three-bedroom example', demoRequest: 'Generate three-bedroom example',
     prompt: 'Request for the assistant', placeholder: 'E.g. draw a 110 m² single-storey house with three bedrooms…',
@@ -50,6 +54,7 @@ const copy = {
     you: 'You', assistant: 'Assistant', stopped: 'Request stopped.', ready: 'Your proposal is ready to review.',
     proposal: 'Review proposal', current: 'Current plan', suggested: 'Proposal', floor: 'Storey to preview',
     area: 'Internal area', units: 'm²', levels: 'Storeys', rooms: 'Rooms', walls: 'Walls', items: 'Objects and openings',
+    services: 'Points and routes', layers: 'Proposal layer', architecture: 'Architecture',
     added: 'Added', changed: 'Changed', removed: 'Removed',
     warnings: 'Points to review', emptyPlan: 'This storey has no geometry to display.',
     discard: 'Discard proposal', apply: 'Apply to plan', discarded: 'Proposal discarded.',
@@ -99,8 +104,11 @@ function comparePlans(base, next) {
     walls: ['x1', 'y1', 'x2', 'y2', 'thickness', 'spec'],
     items: ['type', 'x', 'y', 'width', 'depth', 'angle', 'opening'],
   };
-  return lists.map((kind) => {
-    const entries = (project) => new Map((project?.levels ?? []).flatMap((level) => level[kind].map((item) => [item.id, JSON.stringify([level.id, compareKey(item, fields[kind])])])));
+  return [...lists, 'services'].map((kind) => {
+    const entries = (project) => new Map((project?.levels ?? []).flatMap((level) => kind !== 'services'
+      ? level[kind].map((item) => [item.id, JSON.stringify([level.id, compareKey(item, fields[kind])])])
+      : Object.entries(normalizeBuildingServices(level.services) ?? {}).flatMap(([system, net]) => ['nodes', 'runs'].flatMap((type) =>
+        (net?.[type] ?? []).map((item) => [`${level.id}:${system}:${type}:${item.id}`, JSON.stringify(item)])))));
     const before = entries(base);
     const after = entries(next);
     const added = [...after.keys()].filter((id) => !before.has(id));
@@ -118,9 +126,9 @@ function svgNode(parent, tag, attributes, content) {
   return element;
 }
 
-function previewPlan(container, level, copy, differences, proposed, isPortuguese) {
+function previewPlan(container, level, copy, differences, proposed, isPortuguese, system) {
   container.replaceChildren();
-  if (!level || !lists.some((list) => level[list].length)) {
+  if (!level || !lists.some((list) => level[list].length) && !Object.keys(level.services ?? {}).length) {
     const message = document.createElement('p');
     message.className = 'cva-empty-preview';
     message.textContent = copy.emptyPlan;
@@ -173,6 +181,28 @@ function previewPlan(container, level, copy, differences, proposed, isPortuguese
       'dominant-baseline': 'middle', stroke: '#f4f8fa', 'stroke-width': .075, 'paint-order': 'stroke',
     }, caption);
   }
+  const network = normalizeBuildingServices(level.services)?.[system];
+  if (network) {
+    const profile = serviceSystems[system];
+    const layer = svgNode(svg, 'g', { 'data-review-services': system });
+    for (const run of network.runs) {
+      const points = serviceRunPoints(network, run);
+      if (!points?.length) continue;
+      svgNode(layer, 'polyline', { points: points.map(({ x, y }) => `${x},${y}`).join(' '), fill: 'none',
+        stroke: profile.media[run.medium].color, 'stroke-width': 2, 'stroke-linejoin': 'round',
+        'stroke-linecap': 'round', 'vector-effect': 'non-scaling-stroke' });
+    }
+    for (const node of network.nodes) {
+      const mark = svgNode(layer, 'circle', { cx: node.x, cy: node.y, r: Math.max(.06, Math.min(.20, width * .012)),
+        fill: '#fff', stroke: profile.color, 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke' });
+      svgNode(mark, 'title', {}, node.label ?? profile.kinds[node.kind][isPortuguese ? 'pt' : 'en']);
+    }
+  }
+}
+
+function serviceLayers(base, proposed) {
+  const floors = [...(base?.levels ?? []), ...proposed.levels];
+  return Object.keys(serviceSystems).filter((id) => floors.some(({ services }) => services?.[id]?.nodes?.length || services?.[id]?.runs?.length));
 }
 
 function getWarnings(analysis) {
@@ -213,8 +243,10 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
             <button type="button" data-compare="suggested" aria-pressed="true">${t.suggested}</button>
           </div>
           <select data-cva="level" aria-label="${t.floor}"></select>
+          <select data-cva="layer" aria-label="${t.layers}" hidden></select>
         </div>
         <div class="cva-preview" data-cva="preview"></div>
+        <ul class="cva-service-legend" data-cva="service-legend" hidden></ul>
         <dl class="cva-metrics" data-cva="metrics"></dl>
         <div class="cva-changes" data-cva="changes"></div>
         <div class="cva-checks" data-cva="checks" hidden><h4>${t.warnings}</h4><ul data-cva="warnings"></ul></div>
@@ -248,6 +280,7 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
   let compare = 'suggested';
   let activeLevelId = null;
   let activeLevelIndex = 0;
+  let activeLayer = '';
   let returnFocus = null;
   let previousProject = null;
 
@@ -343,7 +376,22 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       button.setAttribute('aria-pressed', String(button.dataset.compare === compare));
       button.disabled = button.dataset.compare === 'current' && !current;
     });
-    previewPlan($('preview'), level, t, proposal.differences, isSuggested, isPortuguese);
+    const layerPicker = $('layer');
+    const language = isPortuguese ? 'pt' : 'en';
+    layerPicker.replaceChildren(new Option(t.architecture, '', false, !activeLayer), ...proposal.layers.map((id) =>
+      new Option(serviceSystems[id][language], id, false, activeLayer === id)));
+    layerPicker.hidden = !proposal.layers.length;
+    previewPlan($('preview'), level, t, proposal.differences, isSuggested, isPortuguese, activeLayer);
+    const mediaUsed = new Set(level?.services?.[activeLayer]?.runs?.map(({ medium }) => medium));
+    const legend = $('service-legend');
+    legend.replaceChildren(...Object.entries(serviceSystems[activeLayer]?.media ?? {}).filter(([id]) => mediaUsed.has(id)).map(([, entry]) => {
+      const line = document.createElement('li');
+      const swatch = document.createElement('span');
+      swatch.style.backgroundColor = entry.color;
+      line.append(swatch, entry[language]);
+      return line;
+    }));
+    legend.hidden = !legend.childElementCount;
     const area = view ? projectArea(view) : 0;
     $('metrics').replaceChildren(...[[t.area, `${number(area)} ${t.units}`], [t.levels, String(levels.length)], [t.rooms, String(levels.reduce((sum, floor) => sum + floor.rooms.length, 0))]].map(([name, amount]) => {
       const section = document.createElement('div');
@@ -386,7 +434,10 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
 
   function adopt(project, { base = snapshot(), analysis } = {}) {
     if (!validPlan(project)) return false;
-    proposal = { project, base, baseKey: JSON.stringify(base), analysis, differences: comparePlans(base, project), stale: false };
+    const layers = serviceLayers(base, project);
+    activeLayer = layers.find((id) => project.levels.some((floor) => JSON.stringify(floor.services?.[id]) !==
+      JSON.stringify(base?.levels.find((previous) => previous.id === floor.id)?.services?.[id]))) ?? '';
+    proposal = { project, base, baseKey: JSON.stringify(base), analysis, differences: comparePlans(base, project), layers, stale: false };
     compare = 'suggested';
     activeLevelIndex = Math.max(0, project.levels.findIndex(({ id }) => id === project.levelId));
     activeLevelId = project.levels[activeLevelIndex].id;
@@ -538,6 +589,10 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
   }, { signal });
   $('level').addEventListener('change', (event) => {
     activeLevelId = event.target.value;
+    renderComparison();
+  }, { signal });
+  $('layer').addEventListener('change', (event) => {
+    activeLayer = event.target.value;
     renderComparison();
   }, { signal });
   $('composer').addEventListener('submit', (event) => {

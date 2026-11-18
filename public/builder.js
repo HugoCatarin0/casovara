@@ -2,6 +2,8 @@ import { openBuilderReport } from './builder-report.js';
 import { openBuilderShare } from './builder-share.js';
 import { mountBuilderAssistant } from './builder-assistant.js';
 import { mountObjectLibrary } from './builder-catalog.js';
+import { createServicesEditor, renderServicesPlan, servicesPrintLegend } from './services-ui.js';
+import { serviceLimits, serviceSystems } from './building-services.js';
 import { registerBuilderTools } from './builder-webmcp.js';
 import { estimateProject, formatMoney, formatNumber, projectApi, systems } from './core.js';
 import { makeTemplate, templates } from './templates.js';
@@ -20,6 +22,7 @@ import {
 
 const icons = {
   assistant: '<path d="M10 3.5 11.9 9l5.6 2-5.6 2-1.9 5.5-2-5.5L2.5 11 8 9Zm8 .5 1 2.7L22 8l-3 .9-1 3-1-3L14 8l3-1.3Zm.5 13 .6 1.6 1.4.6-1.4.5-.6 1.8-.6-1.8-1.4-.5 1.4-.6Z"/>',
+  services: '<path d="M6 6h10a2 2 0 0 1 2 2v8m-12 2h5a2 2 0 0 0 2-2V6"/><circle cx="4" cy="6" r="2"/><circle cx="4" cy="18" r="2"/><circle cx="18" cy="18" r="2"/>',
   search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   folder: '<path d="M3 7c0-1 .8-2 2-2h5l2 2h7c1 0 2 .9 2 2v9H3Z"/>',
@@ -66,6 +69,8 @@ icons.dock = '<rect x="3.5" y="5" width="17" height="14" rx="1.5"/><path d="M14.
 icons.sun = '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2m0 15v2M2.5 12h2m15 0h2M5.3 5.3l1.5 1.5m10.4 10.4 1.5 1.5m0-13.4-1.5 1.5M6.8 17.2l-1.5 1.5"/>';
 const icon = (name, size = 19) => `<svg width="${size}" height="${size}" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.65" fill="none" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.room}</svg>`;
 const labels = {
+  services: ['Instalações', 'Building services'], serviceReplace: ['Refazer traçado', 'Regenerate layout'],
+  serviceReplacePrompt: ['O novo traçado substitui os pontos e ligações desta especialidade nos pisos abrangidos. Podes usar Desfazer.', 'The new layout replaces points and connections for this service on the selected storeys. You can undo this change.'],
   assistant: ['Assistente IA', 'AI assistant'],
   commands: ['Pesquisar no projeto', 'Search project'], commandPlaceholder: ['Pesquise uma ferramenta, divisão ou vão', 'Search tools, rooms, or openings'], commandEmpty: ['Nenhum resultado.', 'No matching results.'], guides: ['Guias de construção', 'Construction guides'], calculators: ['Calculadoras', 'Calculators'],
   commandTools: ['Ferramentas', 'Tools'], commandEntities: ['Elementos do projeto', 'Project elements'],
@@ -320,13 +325,15 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         <div class="cv-tool-deck" id="cv-tool-deck">
           <div class="cv-tool-deck-bar">
             <div class="cv-drawing-tools" data-role="tools" role="group" aria-label="${tr('mode')}"></div>
-            <button type="button" class="cv-tool cv-library-trigger" data-action="catalog" aria-expanded="false" aria-controls="cv-object-library" title="${tr('furnish')}">${icon('furnish', 16)}<span>${tr('shutter')}</span></button>
+            <div class="cv-tool-deck-side"><button type="button" class="cv-tool cv-library-trigger" data-action="catalog" aria-expanded="false" aria-controls="cv-object-library" title="${tr('furnish')}">${icon('furnish', 16)}<span>${tr('shutter')}</span></button>
+            <button type="button" class="cv-tool cv-service-trigger" data-action="services" aria-label="${tr('services')}" title="${tr('services')}" aria-expanded="false" aria-controls="cv-studio-inspector">${icon('services', 16)}<span>${tr('services')}</span></button></div>
           </div>
           <div class="cv-plan-options" data-role="plan-options" role="group" aria-label="${tr('drawOptions')}" hidden></div>
         </div>
         <div class="cv-view" data-role="view" data-mode="plan">
           <section class="cv-draft" aria-label="${tr('plan')}">
-            <svg data-role="plan" xmlns="http://www.w3.org/2000/svg" aria-label="${tr('plan')}" role="img" tabindex="0" preserveAspectRatio="none"><g data-plan-grid pointer-events="none"></g><g data-plan-scene></g><g data-plan-overlay></g></svg>
+            <svg data-role="plan" xmlns="http://www.w3.org/2000/svg" aria-label="${tr('plan')}" role="img" tabindex="0" preserveAspectRatio="none"><g data-plan-grid pointer-events="none"></g><g data-plan-scene></g><g data-plan-services></g><g data-plan-overlay></g></svg>
+            <button type="button" class="cv-tool cv-service-banner" data-action="services" data-role="service-banner" hidden>${icon('services', 15)}<span></span></button>
             <div class="cv-empty" data-role="empty" hidden><b>${tr('emptyPlan')}</b><p>${tr('tryTools')}</p><button class="cv-button" data-action="new" type="button">${tr('templates')}</button></div>
             <div class="cv-canvas-controls cv-plan-controls">
               <div class="cv-plan-reference">
@@ -377,7 +384,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   const plane = root.querySelector('[data-role="plan"]');
   const planGrid = plane.querySelector('[data-plan-grid]');
   const planScene = plane.querySelector('[data-plan-scene]');
+  const planServices = plane.querySelector('[data-plan-services]');
   const planOverlay = plane.querySelector('[data-plan-overlay]');
+  const serviceBanner = root.querySelector('[data-role="service-banner"]');
+  const serviceTrigger = root.querySelector('.cv-service-trigger');
+  const compactInspector = matchMedia('(max-width: 800px)');
   const fitSelected = root.querySelector('[data-action="fit-selection"]');
   const model = root.querySelector('[data-role="model"]');
   const simulatorPanel = root.querySelector('[data-role="simulator-panel"]');
@@ -410,6 +421,18 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     },
     close: () => setCatalogOpen(false, true),
   });
+  const servicesEditor = createServicesEditor({
+    locale, getProject: () => project, getLevel: level,
+    commit(updates, after) {
+      change(() => {
+        for (const { floor, system, next } of updates) floor.services = { ...floor.services, [system]: next };
+        after?.();
+      }, false);
+      refreshServices();
+    },
+    refresh: refreshServices,
+    confirmReplace(operation) { openModal('confirm', { title: 'serviceReplace', detail: 'serviceReplacePrompt', accept: 'serviceReplace', operation }); },
+  });
   const assistant = mountBuilderAssistant(root, {
     locale,
     getProject: () => project,
@@ -417,11 +440,23 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (!Array.isArray(next?.levels) || !next.levels.length) return false;
       if (baseProject && JSON.stringify(baseProject) !== JSON.stringify(project)) return false;
       const candidate = clean(next);
+      const changedServices = Object.keys(serviceSystems).filter((id) => candidate.levels.some((floor) => {
+        const previous = viewLevel(project, floor.id)?.services?.[id];
+        const proposed = floor.services?.[id];
+        return proposed?.nodes.length && JSON.stringify(previous) !== JSON.stringify(proposed);
+      }));
       change(() => {
         project = candidate;
         selected = pendingPoint = hoverPoint = drag = null;
         tool = 'select';
         category = 'structure';
+        if (changedServices.length) {
+          servicesEditor.clear();
+          servicesEditor.reveal(changedServices[0], { keepVisible: true });
+          inspectorTab = 'services';
+          inspectorOpen = !compactInspector.matches;
+          tool = 'service';
+        }
         if (viewMode === 'view3d') viewMode = 'split';
         resetCamera();
         viewer.fit();
@@ -439,6 +474,13 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     },
     onEmpty: (empty) => { root.querySelector('[data-role="empty-model"]').hidden = !empty; },
     onPick: (picked) => {
+      if (picked?.kind === 'service-node' || picked?.kind === 'service-run') {
+        if (picked.levelId !== project.levelId) switchLevel(picked.levelId);
+        showServices();
+        servicesEditor.select({ ...picked, kind: picked.kind === 'service-node' ? 'node' : 'run' });
+        refreshServices();
+        return;
+      }
       if (!picked) {
         if (selected) { selected = null; render(); }
         return;
@@ -453,6 +495,22 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   resize.observe(view);
   resize.observe(model);
   resize.observe(plane);
+
+  function refreshServices() {
+    updateTools();
+    renderInspector(true);
+    paintPlan(true, false);
+    modelPaint();
+  }
+
+  function showServices() {
+    selected = pendingPoint = hoverPoint = null;
+    tool = 'service';
+    inspectorTab = 'services';
+    inspectorOpen = true;
+    setCatalogOpen(false);
+    servicesEditor.reveal();
+  }
 
   function toast(key) {
     const element = root.querySelector('[data-role="toast"]');
@@ -482,6 +540,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     project = from.pop();
     selected = null;
     pendingPoint = null;
+    servicesEditor.clear();
     markChanged();
     render();
   }
@@ -520,6 +579,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
   function loadProject(next, id) {
     project = clean(next);
+    servicesEditor.reset();
     projectId = id ?? null;
     revision = 0;
     savedRevision = 0;
@@ -634,6 +694,12 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   function updateTools() {
     studio.dataset.tool = tool;
     studio.dataset.inspector = String(inspectorOpen);
+    const editingServices = tool === 'service';
+    const showingServices = inspectorOpen && !catalogOpen && inspectorTab === 'services';
+    serviceTrigger.setAttribute('aria-expanded', String(showingServices));
+    serviceBanner.setAttribute('aria-expanded', String(showingServices));
+    serviceBanner.hidden = !editingServices || showingServices;
+    serviceBanner.querySelector('span').textContent = localized(serviceSystems[servicesEditor.system]);
     toolDeck.hidden = !toolbarOpen;
     deckToggle.setAttribute('aria-expanded', String(toolbarOpen));
     inspectorToggle.setAttribute('aria-expanded', String(inspectorOpen && !catalogOpen));
@@ -667,7 +733,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       ['door', 'window'].includes(tool) || (tool === 'item' && elements[objectType].opening) ? 'placeOpening' :
       tool === 'item' ? 'placeItem' : tool === 'label' || tool === 'north' ? 'placeLabel' :
       tool === 'flooring' ? 'applyFinish' : tool === 'divide' || tool === 'detect' || tool === 'wallChain' ? toolSettings[tool][1] : tool === 'pan' ? 'pan' : 'emptySelect';
-    const instruction = tr(viewMode === 'view3d' ? 'orbitHint' : hint);
+    const instruction = viewMode !== 'view3d' && editingServices ? servicesEditor.hint() : tr(viewMode === 'view3d' ? 'orbitHint' : hint);
     root.querySelector('[data-role="hint"]').textContent = viewMode !== 'view3d' && tool === 'item'
       ? `${catalogPlacement?.catalogRef.name ?? localized(elements[objectType])} · ${instruction}` : instruction;
     root.querySelector('[data-action="finish-drawing"]').hidden = !pendingPoint;
@@ -718,11 +784,23 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
 
   function currentModelScene() {
     const rotation = drag?.handle === 'rotate' && drag.preview !== drag.original ? drag.preview : null;
-    const key = [project, revision, project.levelId, cutaway, showRoof, modelScope, selected?.kind, selected?.id, simulator, rotation];
+    const movingService = drag?.type === 'service-node' && drag.moved ? drag.preview : null;
+    const key = [project, revision, project.levelId, cutaway, showRoof, modelScope, selected?.kind, selected?.id, simulator, rotation, servicesEditor.key, movingService];
     if (!sceneCache?.key.every((value, index) => value === key[index])) {
-      const preview = rotation ? { ...project, levels: project.levels.map((floor) => floor.id === project.levelId
-        ? { ...floor, items: floor.items.map((item) => item.id === rotation.id ? rotation : item) } : floor) } : project;
-      const faces = modelFaces(preview, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected, simulator });
+      let preview = project;
+      if (rotation || movingService) {
+        const current = level();
+        let changes;
+        if (rotation) changes = { items: current.items.map((item) => item.id === rotation.id ? rotation : item) };
+        else {
+          const { system, id } = drag.selection;
+          const service = current.services[system];
+          changes = { services: { ...current.services, [system]: { ...service, nodes: service.nodes.map((node) => node.id === id ? { ...node, ...movingService } : node) } } };
+        }
+        preview = { ...project, levels: project.levels.map((floor) => floor === current ? { ...floor, ...changes } : floor) };
+      }
+      const faces = modelFaces(preview, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected, simulator,
+        services: servicesEditor.layers, selectedService: servicesEditor.selection() });
       sceneCache = { key, scene: compileScene(faces) };
     }
     return sceneCache.scene;
@@ -1035,11 +1113,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (scene) {
       planScene.innerHTML = draftLayer(false, unit, rect.width < 535);
       const current = level();
-      root.querySelector('[data-role="empty"]').hidden = tool !== 'select' || !!(current.rooms.length || current.walls.length || current.items.length || current.image || current.annotations?.length);
+      root.querySelector('[data-role="empty"]').hidden = tool !== 'select' || !!(current.rooms.length || current.walls.length || current.items.length || current.image || current.annotations?.length || servicesEditor.layers.some((id) => current.services?.[id]?.nodes.length));
+      const moving = drag?.type === 'service-node' && drag.moved ? { selection: drag.selection, point: drag.preview } : null;
+      planServices.innerHTML = renderServicesPlan(current, { locale, layers: servicesEditor.layers, unit, selection: servicesEditor.selection(), move: moving, interactive: tool === 'service' });
     }
     const handles = selectedHandles(unit);
-    planOverlay.innerHTML = `<g pointer-events="none">${drawPreview(unit)}</g>${handles}`;
-    if (selected?.kind === 'items' && handles) plane.setAttribute('aria-description', tr('rotationHint'));
+    planOverlay.innerHTML = `<g pointer-events="none">${tool === 'service' ? servicesEditor.preview(hoverPoint, unit) : drawPreview(unit)}</g>${handles}`;
+    if (tool === 'service') plane.setAttribute('aria-description', servicesEditor.hint());
+    else if (selected?.kind === 'items' && handles) plane.setAttribute('aria-description', tr('rotationHint'));
     else plane.removeAttribute('aria-description');
   }
   function schedulePlan(scene = false, viewport = scene) {
@@ -1153,8 +1234,17 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const tabs = ['properties', 'costs', 'data', 'notes'];
     const previousBody = studioPanel.querySelector('.cv-panel-body');
     const scroll = studioPanel.dataset.tab === inspectorTab ? previousBody?.scrollTop : 0;
+    const activeServiceField = studioPanel.contains(document.activeElement) ? document.activeElement.dataset?.serviceField : null;
+    const activeServiceValue = activeServiceField ? document.activeElement.value : null;
+    const openLists = [...studioPanel.querySelectorAll('details[open]')].map((item) => item.classList[0]);
     studioPanel.dataset.tab = inspectorTab;
-    studioPanel.innerHTML = `<div class="cv-panel-tabs" role="group" aria-label="${tr('info')}">${tabs.map((id) => `<button type="button" data-action="tab:${id}" aria-pressed="${id === inspectorTab}">${tr(id)}</button>`).join('')}${toolbarButton('close-inspector', 'close', 'cancel')}</div><div class="cv-panel-body">${inspectorTab === 'properties' ? propertiesPanel() : notebookPanel()}</div>`;
+    if (inspectorTab === 'services') {
+      studioPanel.innerHTML = `<div class="cv-service-header"><h2>${tr('services')}</h2>${toolbarButton('service-action:exit', 'dock', 'properties')}${toolbarButton('close-inspector', 'close', 'cancel')}</div><div class="cv-panel-body">${servicesEditor.panel()}</div>`;
+      for (const details of studioPanel.querySelectorAll('details')) details.open = openLists.includes(details.classList[0]);
+      if (activeServiceField) [...studioPanel.querySelectorAll('[data-service-field]')].find((field) => field.dataset.serviceField === activeServiceField && (field.type !== 'checkbox' || field.value === activeServiceValue))?.focus({ preventScroll: true });
+    } else {
+      studioPanel.innerHTML = `<div class="cv-panel-tabs" role="group" aria-label="${tr('info')}">${tabs.map((id) => `<button type="button" data-action="tab:${id}" aria-pressed="${id === inspectorTab}">${tr(id)}</button>`).join('')}${toolbarButton('close-inspector', 'close', 'cancel')}</div><div class="cv-panel-body">${inspectorTab === 'properties' ? propertiesPanel() : notebookPanel()}</div>`;
+    }
     if (scroll) studioPanel.querySelector('.cv-panel-body').scrollTop = scroll;
   }
 
@@ -1188,7 +1278,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     return `<div class="cv-modal-menu">${actions.map(([action, glyph, key]) => toolbarButton(action, glyph, key, '', true)).join('')}</div>`;
   }
   const commands = [
-    ['assistant', 'assistant', 'assistant'],
+    ['assistant', 'assistant', 'assistant'], ['services', 'services', 'services'],
     ['projects', 'folder', 'projects'], ['new', 'plus', 'new'], ['import', 'upload', 'import'], ['save', 'save', 'save'],
     ['tool:select', 'select', 'select'], ['tool:pan', 'pan', 'pan'], ['tool:wall', 'wall', 'wall'], ['tool:angled', 'angled', 'angled'],
     ['tool:room', 'room', 'room'], ['tool:detect', 'fit', 'detectRoom'], ['tool:divide', 'room', 'splitUpdate'], ['tool:door', 'door', 'door'], ['tool:window', 'window', 'window'], ['catalog', 'furnish', 'furnish'],
@@ -1246,7 +1336,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       content = `<div class="cv-help"><h3>${tr('keyboard')}</h3>${infoRows([[tr('select'), 'V'], [tr('pan'), 'H'], [tr('wall'), 'W'], [tr('room'), 'R'], [tr('measure'), 'M'], [tr('undo'), 'Ctrl / ⌘ + Z'], [tr('redo'), 'Ctrl / ⌘ + Shift + Z'], [tr('save'), 'Ctrl / ⌘ + S'], [tr('commands'), 'Ctrl / ⌘ + K'], [tr('cancel'), 'Esc'], [tr('delete'), 'Delete']])}<a class="cv-button" href="/guias">${isPt ? 'Guias de construção' : 'Construction guides'} ${icon('external', 16)}</a> <a class="cv-button" href="/calculadoras">${isPt ? 'Calculadoras' : 'Calculators'} ${icon('external', 16)}</a></div>`;
     } else if (modal === 'confirm') {
       title = tr(currentModalData.title);
-      content = `<p>${tr(currentModalData.detail)}</p><div class="cv-action-row"><button class="cv-button" type="button" data-action="close">${tr('cancel')}</button><button class="cv-button cv-danger" type="button" data-action="confirm">${tr('delete')}</button></div>`;
+      content = `<p>${tr(currentModalData.detail)}</p><div class="cv-action-row"><button class="cv-button" type="button" data-action="close">${tr('cancel')}</button><button class="cv-button cv-danger" type="button" data-action="confirm">${tr(currentModalData.accept ?? 'delete')}</button></div>`;
     } else if (modal === 'roofs') {
       content = `<form class="cv-form" data-form="roof"><label class="cv-field">${tr('type')}<select name="type">${['none', 'flat', 'gable', 'hipped'].map((key) => `<option value="${key}" ${(level().roof ?? 'none') === key ? 'selected' : ''}>${tr(key)}</option>`).join('')}</select></label><label class="cv-field">${tr('roofPitch')} (°)<input name="pitch" type="number" min="5" max="65" step="1" required value="${level().pitch ?? 30}"></label><button class="cv-button cv-primary" type="submit">${tr('save')}</button></form>`;
     } else if (modal === 'flooring') {
@@ -1279,12 +1369,15 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     project.levelId = id;
     selected = null;
     pendingPoint = null;
+    servicesEditor.clear();
     resetCamera();
     markChanged();
     render();
   }
   function setTool(id) {
     setCatalogOpen(false);
+    servicesEditor.clear();
+    if (inspectorTab === 'services') inspectorTab = 'properties';
     selected = null;
     pendingPoint = null;
     hoverPoint = null;
@@ -1350,6 +1443,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         if (wall.spec) wall.spec.exteriorSide *= -1;
       }
       for (const annotation of entry.annotations ?? []) annotation.x = x(annotation.x);
+      for (const { nodes, runs } of Object.values(entry.services ?? {})) {
+        for (const item of [...nodes, ...runs.flatMap((run) => run.points)]) item.x = Number(clamp(x(item.x), -serviceLimits.coordinate, serviceLimits.coordinate).toFixed(3));
+      }
       if (entry.image) entry.image.x = x(entry.image.x + entry.image.width);
     }
     return state;
@@ -1496,6 +1592,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     render();
   }
   function drawAction(event) {
+    if (tool === 'service') return;
     constrainAngle = event.shiftKey;
     const p = position(event);
     const current = level();
@@ -1624,6 +1721,20 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     drag.preview = next;
     return true;
   }
+  function previewServiceNode(event) {
+    drag.moved ||= Math.hypot(event.clientX - drag.screen.x, event.clientY - drag.screen.y) > 5;
+    if (!drag.moved) return false;
+    const p = planPosition(event);
+    const step = gridStep();
+    const move = (value) => {
+      const bounded = clamp(value, -serviceLimits.coordinate, serviceLimits.coordinate);
+      return settings.snap && !event.altKey ? snapTo(bounded, step) : bounded;
+    };
+    const next = point(move(drag.original.x + p.x - drag.start.x), move(drag.original.y + p.y - drag.start.y));
+    if (next.x === drag.preview.x && next.y === drag.preview.y) return false;
+    drag.preview = next;
+    return true;
+  }
   plane.addEventListener('pointerdown', (event) => {
     if ((event.button !== 0 && event.button !== 1) || pen.size >= 2) return;
     preventClick = false;
@@ -1634,9 +1745,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       const mid = midpoint(positions);
       pinch = { distance: separation(positions), midpoint: mid };
       if (drag?.type === 'draw' && drag.moved) pendingPoint = null;
-      const wasRotating = drag?.handle === 'rotate';
+      const hadPreview = drag?.handle === 'rotate' || drag?.type === 'service-node';
       drag = null;
-      if (wasRotating) { delete plane.dataset.rotating; modelPaint(); }
+      if (hadPreview) { delete plane.dataset.rotating; modelPaint(); }
       plane.dataset.panning = 'true';
       updateTools();
       schedulePlan(true);
@@ -1649,6 +1760,16 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (tool === 'pan' || spacePan || event.button === 1) {
       preventClick = true;
       drag = panFrom(event);
+    } else if (tool === 'service') {
+      const picked = servicesEditor.locate(event.target);
+      if (servicesEditor.mode === 'select') {
+        servicesEditor.select(picked);
+        if (picked?.kind === 'node') {
+          const original = level().services[picked.system].nodes.find(({ id }) => id === picked.id);
+          drag = { type: 'service-node', selection: picked, pointerId: event.pointerId, start: world, screen: point(event.clientX, event.clientY), original, preview: original, moved: false };
+        } else if (!picked) drag = panFrom(event);
+        refreshServices();
+      } else drag = { type: 'service-placement', hit: picked, screen: point(event.clientX, event.clientY), moved: false };
     } else if (tool === 'select') {
       const wasSelected = selected;
       selected = hit;
@@ -1698,6 +1819,15 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         schedulePlan(true, false);
         modelPaint();
       }
+    } else if (drag?.type === 'service-node') {
+      if (previewServiceNode(event)) {
+        schedulePlan(true, false);
+        modelPaint();
+      }
+    } else if (tool === 'service') {
+      if (drag?.type === 'service-placement') drag.moved ||= Math.hypot(event.clientX - drag.screen.x, event.clientY - drag.screen.y) > 8;
+      hoverPoint = position(event);
+      schedulePlan();
     } else if (drag?.type === 'shape') {
       drag.moved ||= Math.hypot(event.clientX - drag.screen.x, event.clientY - drag.screen.y) > 5;
       if (drag.moved) {
@@ -1742,10 +1872,17 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     delete plane.dataset.rotating;
     const rotating = drag?.handle === 'rotate';
     if (rotating && !cancelled) previewRotation(event);
+    const serviceDrag = drag?.type === 'service-node';
+    const servicePlacement = drag?.type === 'service-placement' ? drag : null;
+    if (serviceDrag && !cancelled) previewServiceNode(event);
     const moved = drag?.moved;
     const drawing = drag?.type === 'draw';
     const panning = drag?.type === 'pan';
-    if (!cancelled && moved && drag?.type === 'shape' && drag.preview !== drag.original) {
+    if (!cancelled && moved && serviceDrag && (drag.preview.x !== drag.original.x || drag.preview.y !== drag.original.y)) {
+      const { selection, preview } = drag;
+      drag = null;
+      servicesEditor.moveNode(selection, point(preview.x, preview.y));
+    } else if (!cancelled && moved && drag?.type === 'shape' && drag.preview !== drag.original) {
       const { kind, original, preview, geometry } = drag;
       drag = null;
       change(() => {
@@ -1757,15 +1894,18 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       drag = null;
       if (cancelled && drawing && moved) { pendingPoint = null; updateTools(); }
       if (cancelled || moved) schedulePlan(!panning, true);
-      if (rotating) modelPaint();
+      if (rotating || serviceDrag) modelPaint();
     }
-    if (!cancelled && (!moved || drawing) && !preventClick && event.button === 0) drawAction(event);
+    if (!cancelled && (!moved || drawing) && !preventClick && event.button === 0) {
+      if (servicePlacement) servicesEditor.click(position(event), planPosition(event), servicePlacement.hit, Math.min(.5, worldPixel() * 16));
+      else drawAction(event);
+    }
   }
   plane.addEventListener('pointerup', releasePointer, listen);
   plane.addEventListener('pointercancel', (event) => releasePointer(event, true), listen);
   plane.addEventListener('lostpointercapture', (event) => releasePointer(event, true), listen);
-  function cancelRotation() {
-    if (drag?.handle !== 'rotate') return;
+  function cancelPlanPreview() {
+    if (drag?.handle !== 'rotate' && drag?.type !== 'service-node') return;
     const { pointerId } = drag;
     releasePointer({ pointerId }, true);
     if (plane.hasPointerCapture(pointerId)) plane.releasePointerCapture(pointerId);
@@ -1800,7 +1940,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     schedulePlan();
   }
   window.addEventListener('keyup', (event) => { if (event.code === 'Space') releaseSpacePan(); }, listen);
-  window.addEventListener('blur', () => { releaseSpacePan(); cancelRotation(); }, listen);
+  window.addEventListener('blur', () => { releaseSpacePan(); cancelPlanPreview(); }, listen);
   plane.addEventListener('wheel', (event) => {
     event.preventDefault();
     if (drag?.handle === 'rotate') return;
@@ -1855,11 +1995,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const margin = technicalDrawing() ? 1.6 : 1.15;
     const box = { x: b.x - margin, y: b.y - margin, w: b.width + 2 * margin, h: b.height + 2 * margin };
     const paper = technicalDrawing() ? draftingInk.halo : '#faf8f2';
-    return `<svg xmlns="http://www.w3.org/2000/svg" font-family="Arial,sans-serif" viewBox="${box.x} ${box.y} ${box.w} ${box.h}" width="1600" height="1200"><title>${str(project.name)} · ${str(level().name)}</title><rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="${paper}"/>${draftLayer(true)}</svg>`;
+    const services = renderServicesPlan(level(), { locale, layers: servicesEditor.layers, unit: Math.max(box.w, box.h) / 1000 });
+    const legend = servicesPrintLegend(level(), servicesEditor.layers, { locale, x: box.x + margin, y: box.y + box.h, width: box.w - margin });
+    box.h += legend.height;
+    return `<svg xmlns="http://www.w3.org/2000/svg" font-family="Arial,sans-serif" viewBox="${box.x} ${box.y} ${box.w} ${box.h}" width="1600" height="1200"><title>${str(project.name)} · ${str(level().name)}</title><rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" fill="${paper}"/>${draftLayer(true)}${services}${legend.markup}</svg>`;
   }
   function exportPng() {
     if (viewMode !== 'plan') {
-      const scene = compileScene(modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, simulator }));
+      const scene = compileScene(modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, simulator, services: servicesEditor.layers }));
       if (scene.empty) { toast('exportError'); return; }
       modelImage(scene, viewer.camera()).toBlob((blob) => blob ? download(blob, 'png', 'image/png') : toast('exportError'));
       return;
@@ -1913,7 +2056,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const action = button.dataset.action;
     const [type, arg] = action.split(':');
     if (button.dataset.command && dialog.open) {
-      if (type === 'catalog') fromFocus = null;
+      if (type === 'catalog' || type === 'services') fromFocus = null;
       dialog.close();
       if (type === 'tool') category = categories.find((entry) => entry.tools.includes(arg))?.id ?? 'structure';
     }
@@ -1972,6 +2115,31 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         break;
       case 'finish-drawing': finishDrawing(); break;
       case 'catalog': setCatalogOpen(!catalogOpen, true); break;
+      case 'services': {
+        if (inspectorOpen && !catalogOpen && inspectorTab === 'services') inspectorOpen = false;
+        else showServices();
+        refreshServices();
+        if (inspectorOpen) studioPanel.querySelector('[data-service-field="system"]').focus({ preventScroll: true });
+        else serviceTrigger.focus({ preventScroll: true });
+        break;
+      }
+      case 'service-action': {
+        if (arg === 'exit') { setTool('select'); inspectorToggle.focus({ preventScroll: true }); break; }
+        if (arg === 'canvas') {
+          inspectorOpen = false;
+          refreshServices();
+          plane.focus({ preventScroll: true });
+          break;
+        }
+        if (arg === 'remove-bend') { servicesEditor.removeBend(Number(button.dataset.index)); break; }
+        servicesEditor.modeAction(arg);
+        if (arg === 'generate' || arg === 'remove') break;
+        if (viewMode === 'view3d') viewMode = 'split';
+        updateMode();
+        refreshServices();
+        studioPanel.querySelector(`[data-action="service-action:${arg}"]`)?.focus({ preventScroll: true });
+        break;
+      }
       case 'mode': viewMode = arg; render(); break;
       case 'view3d': viewMode = 'view3d'; render(); break;
       case 'undo': undo(); break;
@@ -2220,6 +2388,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }, listen);
   root.addEventListener('change', async (event) => {
     const input = event.target;
+    if (input.matches('[data-service-field]')) { servicesEditor.field(input); refreshServices(); return; }
     if (input.matches('[data-role="file"]')) {
       const file = input.files?.[0];
       input.value = '';
@@ -2358,6 +2527,14 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   dialog.addEventListener('close', () => {
     if (!dialog.open && fromFocus?.isConnected) fromFocus.focus({ preventScroll: true });
   }, listen);
+  root.addEventListener('submit', (event) => {
+    if (!event.target.matches('[data-service-form]')) return;
+    event.preventDefault();
+    const data = new FormData(event.target);
+    document.activeElement?.blur();
+    servicesEditor.submit(data);
+    studioPanel.querySelector('[data-service-form] [type=submit]')?.focus({ preventScroll: true });
+  }, listen);
   dialog.addEventListener('submit', async (event) => {
     event.preventDefault();
     const data = new FormData(event.target);
@@ -2434,10 +2611,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const editing = event.target.matches?.('input, textarea, select, [contenteditable]');
     const key = event.key.toLowerCase();
     const chord = event.ctrlKey || event.metaKey;
-    if (drag?.handle === 'rotate') {
+    if (drag?.handle === 'rotate' || drag?.type === 'service-node') {
       if (key === 'escape') {
         event.preventDefault();
-        cancelRotation();
+        cancelPlanPreview();
       }
       return;
     }
@@ -2465,10 +2642,11 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       undo(event.shiftKey || key === 'y');
     } else if (key === 'escape' || key === 'enter' && pendingPoint) {
       if (key === 'escape' && !simulatorPanel.hidden) { setSimulatorOpen(false); simulatorToggle.focus({ preventScroll: true }); }
+      else if (key === 'escape' && tool === 'service' && (servicesEditor.mode !== 'select' || servicesEditor.selection())) { servicesEditor.clear(); refreshServices(); }
       else if (pendingPoint) finishDrawing();
       else setTool('select');
     } else if (key === 'delete' || key === 'backspace') {
-      if (removeEntity()) event.preventDefault();
+      if (tool === 'service' ? servicesEditor.remove() : removeEntity()) event.preventDefault();
     } else if (!chord) {
       if (Object.hasOwn(modeKeys, key)) {
         event.preventDefault(); viewMode = modeKeys[key]; render(); return;

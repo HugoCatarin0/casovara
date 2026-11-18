@@ -77,12 +77,15 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
   assert.match(create._meta.ui.resourceUri, /^ui:\/\/casovara\//);
   assert.ok(inspect.inputSchema.required.includes('project'));
   assert.ok(definitions.casovara_edit_plan.inputSchema.required.includes('project'));
+  assert.ok(definitions.casovara_design_services.inputSchema.required.includes('project'));
+  assert.equal(definitions.casovara_design_services._meta.ui.resourceUri, create._meta.ui.resourceUri);
   const { resources } = await call('resources/list');
   assert.equal(resources.find(({ uri }) => uri === create._meta.ui.resourceUri).mimeType, appMimeType);
   const { contents: [preview] } = await call('resources/read', { uri: create._meta.ui.resourceUri });
   assert.equal(preview.mimeType, appMimeType);
   assert.match(preview.text, /ui\/initialize/);
   assert.match(preview.text, /ui\/notifications\/tool-result/);
+  assert.match(preview.text, /service-palette[^>]*>\{"electrical"/);
   const { contents: [guide] } = await call('resources/read', { uri: 'casovara://skills/house-planning' });
   assert.match(guide.text, /casovara_create_plan/);
   assert.equal((await tool('casovara_get_planner_skill', {})).content[0].text, guide.text);
@@ -108,6 +111,12 @@ test('A legacy MCP Apps client discovers the design skill and creates, inspects 
   assert.equal(edit.structuredContent.project.name, 'Casa do Pátio revista');
   assert.ok(edit.structuredContent.project.levels[0].items.some(({ type }) => type === 'bed'));
   assert.ok(!project.levels[0].items.some(({ type }) => type === 'bed'));
+  const drawing = await tool('casovara_design_services', { project, operations: [{ op: 'generate', systems: ['electrical', 'vmc'] }] });
+  assert.ok(drawing.structuredContent.project.levels[0].services.electrical.runs.length);
+  assert.ok(drawing.structuredContent.project.levels[0].services.vmc.nodes.length);
+  const verification = await tool(inspect.name, { project: drawing.structuredContent.project });
+  assert.equal(verification.structuredContent.analysis.levels[0].services.electrical.nodes.length,
+    drawing.structuredContent.project.levels[0].services.electrical.nodes.length);
   assert.deepEqual(await readdir(folder), []);
 });
 

@@ -22,6 +22,20 @@ Use `Ctrl/⌘ + K` para localizar ferramentas, compartimentos e vãos, ou `1`, `
 
 O painel **Ambiente 3D** controla a apresentação em Materiais, Maquete ou Técnico, a altura do corte, o terreno, o mobiliário e as sombras. As vistas guardadas incluem estes controlos. As predefinições de luz usam a direção e a altura solar escolhidas no painel para estudos visuais.
 
+## Instalações da casa
+
+Abra **Instalações** no editor e escolha uma especialidade. Pode partir de uma proposta automática baseada nas divisões e nos equipamentos da planta ou colocar os pontos e traçar as ligações manualmente. A vista em planta e a vista 3D mostram os pontos e traçados da camada selecionada. As mudanças entram no histórico e são guardadas com o projeto, incluindo nos ficheiros `.casovara`.
+
+| Especialidade | Redes e pontos representados |
+| --- | --- |
+| Eletricidade | Quadro, tomadas, iluminação, interruptores e ligações. |
+| Águas e esgotos | Coletores, aparelhos sanitários e traçados independentes de água fria, água quente e esgotos. |
+| VMC | Unidade, condutas, insuflação, extração, admissão e rejeição. |
+| Ar condicionado | Unidades, ligações de refrigerante e drenagem de condensados. |
+| Piso radiante | Coletor, zonas, ida, retorno e circuitos de piso. Gere esta especialidade quando a escolher. |
+
+Os esquemas automáticos organizam a geometria por piso. As ligações entre pisos, o dimensionamento e a conformidade técnica exigem um projeto de especialidades. [Instalações elétricas na DGEG](https://www.dgeg.gov.pt/pt/areas-setoriais/energia/energia-eletrica/instalacoes-eletricas-de-servico-particular/procedimentos-e-controlo-das-instalacoes/projeto/) · [Redes prediais de água e drenagem](https://diariodarepublica.pt/dr/detalhe/decreto-regulamentar/23-1995-431873) · [Sistema de Certificação Energética](https://www.dgeg.gov.pt/pt/areas-setoriais/energia/eficiencia-energetica/sistema-de-certificacao-energetica-dos-edificios/sce-sistema-de-certificacao-energetica-dos-edificios)
+
 ## Biblioteca de objetos
 
 Abra **Elementos** na barra do editor para pesquisar objetos por nome, navegar por categoria ou mudar de catálogo. Escolha um objeto e coloque-o na planta. Para orientar um objeto já colocado, selecione-o e arraste a pega circular. O ângulo também pode ser editado no painel de propriedades ou com as setas quando a pega está focada. **Desfazer** repõe a orientação anterior.
@@ -65,9 +79,12 @@ O servidor expõe MCP por Streamable HTTP em `http://127.0.0.1:3000/mcp`. Para c
 | --- | --- |
 | `casovara_create_plan` | Criar uma planta editável com pisos, divisões, paredes, vãos e cobertura. |
 | `casovara_edit_plan` | Aplicar um lote de alterações à cópia de um projeto fornecido. |
-| `casovara_inspect_plan` | Obter IDs e medidas de geometria, estimativa indicativa e avisos. |
+| `casovara_inspect_plan` | Obter IDs, geometria, esquemas de instalações, estimativa indicativa e avisos. |
+| `casovara_design_services` | Gerar e editar pontos e traçados de instalações por especialidade e piso. |
 
 Os clientes externos fornecem o JSON do projeto nas ferramentas de edição e inspeção. O recurso MCP Apps permite rever a planta por piso e exportar `.casovara` para **Importar projeto** no planeador. Em navegadores com WebMCP, as ferramentas da página podem inspecionar a planta aberta e preparar propostas para revisão no editor. [Especificação MCP Apps](https://apps.extensions.modelcontextprotocol.io/api/documents/overview.html) · [WebMCP no Chromium](https://developer.chrome.com/docs/modern-web-guidance/guides/webmcp/webmcp)
+
+Para gerar eletricidade e águas por MCP, envie `operations: [{ "op": "generate", "systems": ["electrical", "plumbing"] }]` com o `project`. Use `levelIds` para limitar aos pisos pretendidos e `replace: true` para substituir esquemas existentes. Para alterações, inspecione os identificadores da rede e use a operação `edit` com a especialidade, `levelId` e `changes`. O Assistente IA usa as mesmas operações e permite comparar a proposta por camada antes de a aplicar.
 
 ## Projetos, alojamento e domínios
 

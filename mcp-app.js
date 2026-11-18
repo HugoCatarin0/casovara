@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { detectLocale, languagePreferences } from './public/locales.js';
 import { designTools, plannerGuide, runDesignTool } from './public/plan-agent.js';
+import { serviceSystems } from './public/building-services.js';
 
 const MODERN_VERSION = '2026-07-28';
 const LEGACY_VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26'];
@@ -16,7 +17,7 @@ const REVIEW_FILE = new URL('./public/mcp-planner.html', import.meta.url);
 const maxBody = 4 * 1024 * 1024;
 const serverInfo = { name: 'casovara', title: 'Casovara', version: '1.0.0' };
 const capabilities = { tools: {}, resources: {}, prompts: {}, extensions: { [APP_EXTENSION]: { mimeTypes: [APP_MIME_TYPE] } } };
-const instructions = 'Use casovara_get_planner_skill to learn the design workflow. Design tools work on draft plans and on JSON supplied with the request. Review geometry and estimates in Casovara before building.';
+const instructions = 'Use casovara_get_planner_skill to learn the design workflow. Design tools work on draft plans and on JSON supplied with the request. Generate or edit schematic building services with casovara_design_services. Review geometry and estimates in Casovara before building.';
 const resources = [
   { uri: REVIEW_URI, name: 'Casovara plan review', description: 'Explore the generated floor plan and export a project file.', mimeType: APP_MIME_TYPE, _meta: { ui: {} } },
   { uri: GUIDE_URI, name: 'Casovara house-planning skill', description: 'Planning workflow, metric coordinates, room and opening rules, and example tool calls.', mimeType: 'text/markdown' },
@@ -41,9 +42,9 @@ const analysisSchema = {
 
 function descriptors() {
   const definitions = designTools.map((tool) => {
-    const preview = ['casovara_create_plan', 'casovara_edit_plan'].includes(tool.name);
+    const preview = tool.name !== 'casovara_inspect_plan';
     let inputSchema = tool.inputSchema;
-    if (tool.name === 'casovara_edit_plan' || tool.name === 'casovara_inspect_plan') {
+    if (tool.name !== 'casovara_create_plan') {
       inputSchema = { ...inputSchema, required: [...new Set([...(inputSchema.required ?? []), 'project'])] };
     }
     return {
@@ -52,7 +53,8 @@ function descriptors() {
       ...(preview ? { _meta: { ui: { resourceUri: REVIEW_URI } } } : {}),
       outputSchema: {
         type: 'object',
-        properties: preview ? { project: projectSchema, analysis: analysisSchema } : { analysis: analysisSchema },
+        properties: { analysis: analysisSchema, ...(preview ? { project: projectSchema } : {}),
+          ...(tool.name === 'casovara_design_services' ? { serviceChanges: { type: 'array', items: { type: 'object' } } } : {}) },
         required: preview ? ['project', 'analysis'] : ['analysis'],
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: !preview, openWorldHint: false },
@@ -214,7 +216,8 @@ async function dispatch(method, params, req, modern) {
       if (params.uri === GUIDE_URI) return { contents: [{ uri: GUIDE_URI, mimeType: 'text/markdown', text: plannerGuide }] };
       if (params.uri === REVIEW_URI) {
         return { contents: [{
-          uri: REVIEW_URI, mimeType: APP_MIME_TYPE, text: await readFile(REVIEW_FILE, 'utf8'),
+          uri: REVIEW_URI, mimeType: APP_MIME_TYPE,
+          text: (await readFile(REVIEW_FILE, 'utf8')).replace('<!-- service palette -->', JSON.stringify(serviceSystems).replaceAll('<', '\\u003c')),
           _meta: { ui: { prefersBorder: true } },
         }] };
       }

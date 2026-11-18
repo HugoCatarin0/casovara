@@ -19,9 +19,41 @@ const create = (overrides = {}) => runDesignTool('casovara_create_plan', {
 const edit = (project, operations) => runDesignTool('casovara_edit_plan', { operations }, { project });
 
 test('Planning tools describe creation, atomic editing and inspection', () => {
-  assert.deepEqual(designTools.map(({ name }) => name), ['casovara_create_plan', 'casovara_edit_plan', 'casovara_inspect_plan']);
+  assert.deepEqual(designTools.map(({ name }) => name), ['casovara_create_plan', 'casovara_edit_plan', 'casovara_inspect_plan', 'casovara_design_services']);
   assert.ok(designTools[1].inputSchema.properties.operations.items.oneOf.length >= 10);
   assert.match(plannerGuide, /metres/);
+});
+
+test('Service tool generates chosen schemes on specified floors and adjusts routes atomically', () => {
+  const { project } = create({ levels: [
+    { id: 'ground-services', name: 'Rés do chão', rooms: [
+      { type: 'kitchen', x: 0, y: 0, width: 4, depth: 4 },
+      { type: 'bath', x: 4, y: 0, width: 3, depth: 4 },
+      { type: 'living', x: 0, y: 4, width: 7, depth: 3 },
+    ] },
+    { id: 'upper-services', name: 'Piso 1', rooms: [{ type: 'bedroom', x: 0, y: 0, width: 4, depth: 4 }] },
+  ] });
+  const tool = (operations, current = project) => runDesignTool('casovara_design_services', { project: current, operations });
+  const systems = ['electrical', 'plumbing', 'vmc', 'airConditioning', 'radiantFloor'];
+  const planned = tool([{ op: 'generate', systems, levelIds: ['ground-services'] }]);
+  assert.deepEqual(planned.serviceChanges.map(({ result }) => result), systems.map(() => 'generated'));
+  assert.equal(project.levels[0].services, undefined);
+  assert.equal(planned.project.levels[1].services, undefined);
+  assert.deepEqual(Object.keys(planned.analysis.levels[0].services).sort(), [...systems].sort());
+  const current = planned.project.levels[0].services.plumbing;
+  assert.deepEqual([...new Set(current.runs.map(({ medium }) => medium))].sort(), ['cold', 'drain', 'hot']);
+  const run = current.runs[0];
+  const adjustment = { op: 'edit', system: 'plumbing', levelId: 'ground-services', changes: [
+    { op: 'update_run', id: run.id, run: { points: [{ x: 3, y: 2 }], label: 'Coordenação' } },
+  ] };
+  const adjusted = tool([adjustment], planned.project);
+  const editedRun = adjusted.project.levels[0].services.plumbing.runs.find(({ id }) => id === run.id);
+  assert.deepEqual(editedRun.points, [{ x: 3, y: 2 }]);
+  assert.equal(editedRun.label, 'Coordenação');
+  assert.deepEqual(adjusted.project.levels[0].services.vmc, planned.project.levels[0].services.vmc);
+  assert.throws(() => tool([adjustment, { ...adjustment, changes: [{ op: 'delete_run', id: 'missing-run' }] }], planned.project));
+  assert.notEqual(planned.project.levels[0].services.plumbing.runs[0].label, 'Coordenação');
+  assert.throws(() => tool([{ op: 'generate', systems: ['plumbing'] }], { ...adjusted.project, levels: [adjusted.project.levels[0]] }), /kept|preserv|match|generated/i);
 });
 
 test('Create draws a house with one shared wall, attached openings and renderable geometry', () => {

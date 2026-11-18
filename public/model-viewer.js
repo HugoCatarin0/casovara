@@ -134,7 +134,7 @@ export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, on
       set({ panX: origin.panX + (event.clientX - start.x) / rect.width, panY: origin.panY + (event.clientY - start.y) / rect.height });
     } else if (!tap) {
       set({
-        azimuth: origin.azimuth + (event.clientX - start.x) * .45,
+        azimuth: origin.azimuth - (event.clientX - start.x) * .45,
         elevation: origin.elevation + (event.clientY - start.y) * .31,
       });
     }

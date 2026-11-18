@@ -51,6 +51,9 @@
     #view { display: block; width: 100%; height: clamp(240px, 55vw, 420px); border-block: 1px solid var(--border); background: var(--secondary); }
     footer { display: grid; gap: 12px; }
     .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    #legend { display: flex; flex-wrap: wrap; gap: 5px 12px; margin: 0; padding: 0; list-style: none; font-size: .85rem; }
+    #legend li { display: inline-flex; align-items: center; gap: 5px; }
+    #legend span { width: 14px; height: 3px; border-radius: 2px; }
     ul { margin: 4px 0; padding-left: 22px; }
     details { border-top: 1px solid var(--border); padding-top: 8px; }
     summary { color: var(--muted); cursor: pointer; }
@@ -71,9 +74,11 @@
         <p id="metrics" class="muted"></p>
       </div>
       <label id="levelField" hidden><span id="levelLabel">Piso</span><select id="levels"></select></label>
+      <label id="layerField" hidden><span id="layerLabel">Camada</span><select id="layers"></select></label>
     </header>
     <svg id="view" role="img" aria-label="Planta do piso" hidden></svg>
     <footer>
+      <ul id="legend" hidden></ul>
       <p id="status" role="status">A aguardar o projeto.</p>
       <section id="checks" hidden>
         <h2 id="checksTitle">Verificação da geometria</h2>
@@ -90,18 +95,21 @@
       </details>
     </footer>
   </main>
+  <script type="application/json" id="service-palette"><!-- service palette --></script>
   <script>
     const appName = 'Casovara plan review';
     const protocol = '2026-01-26';
     const host = window.parent;
     const svgNamespace = 'http://www.w3.org/2000/svg';
     const ui = Object.fromEntries([
-      'preview', 'title', 'metrics', 'levelField', 'levelLabel', 'levels', 'view', 'status',
+      'preview', 'title', 'metrics', 'levelField', 'levelLabel', 'levels', 'layerField', 'layerLabel', 'layers', 'legend', 'view', 'status',
       'checks', 'checksTitle', 'checksSummary', 'warnings', 'actions', 'download', 'inspect', 'data', 'dataLabel', 'raw',
     ].map((id) => [id, document.getElementById(id)]));
+    const serviceProfile = JSON.parse(document.getElementById('service-palette').textContent.replace('<!-- service palette -->', '{}'));
     const copy = {
       pt: {
         title: 'Pré-visualização da planta', waiting: 'A aguardar o projeto.', level: 'Piso', image: 'Planta do piso',
+        layer: 'Camada', architecture: 'Arquitetura',
         checks: 'Verificação da geometria', download: 'Descarregar projeto', inspect: 'Verificar planta',
         data: 'Ficheiro do projeto (JSON)', empty: 'Este piso ainda está vazio.', checking: 'A verificar a planta…',
         unsupported: 'Este anfitrião não permite verificar novamente. Pode abrir o ficheiro no planeador.',
@@ -112,6 +120,7 @@
       },
       en: {
         title: 'Floor plan preview', waiting: 'Waiting for the project.', level: 'Storey', image: 'Floor plan',
+        layer: 'Layer', architecture: 'Architecture',
         checks: 'Geometry check', download: 'Download project', inspect: 'Check plan', data: 'Project file (JSON)',
         empty: 'This storey is empty.', checking: 'Checking the plan…',
         unsupported: 'This host could not rerun the check. You can open the file in the planner.',
@@ -131,6 +140,8 @@
     let profile = {};
     let project;
     let analysis;
+    let initialLayer = '';
+    let initialLevel = '';
     let sequence = 0;
     let bridgeReady = false;
     let serverTools = false;
@@ -170,6 +181,7 @@
       document.documentElement.dataset.theme = profile.theme === 'dark' ? 'dark' : 'light';
       ui.levelLabel.textContent = strings().level;
       ui.view.setAttribute('aria-label', strings().image);
+      ui.layerLabel.textContent = strings().layer;
       ui.checksTitle.textContent = strings().checks;
       ui.download.textContent = strings().download;
       ui.inspect.textContent = strings().inspect;
@@ -194,6 +206,16 @@
       const rooms = level.rooms.filter((room) => finite(room, ['x', 'y', 'w', 'h']) && room.w > 0 && room.h > 0);
       const walls = level.walls.filter((wall) => finite(wall, ['x1', 'y1', 'x2', 'y2', 'thickness']));
       const items = level.items.filter((item) => finite(item, ['x', 'y', 'width', 'depth', 'angle']));
+      const system = ui.layers.value;
+      const service = Object.hasOwn(serviceProfile, system) ? serviceProfile[system] : null;
+      const network = service && level.services?.[system];
+      const nodes = Array.isArray(network?.nodes) ? network.nodes.slice(0, 300).filter((node) => finite(node, ['x', 'y'])) : [];
+      const byId = new Map(nodes.map((node) => [node.id, node]));
+      const runs = Array.isArray(network?.runs) ? network.runs.slice(0, 500).filter((run) => run && byId.has(run.from) && byId.has(run.to) &&
+        Object.hasOwn(service.media, run.medium)).map((run) => ({ medium: run.medium, points: [byId.get(run.from),
+          ...(Array.isArray(run.points) ? run.points.slice(0, 80).filter((point) => finite(point, ['x', 'y'])) : []), byId.get(run.to)] })) : [];
+      ui.legend.replaceChildren();
+      ui.legend.hidden = !runs.length;
       const points = [
         ...rooms.flatMap(({ x, y, w, h }) => [[x, y], [x + w, y + h]]),
         ...walls.flatMap(({ x1, y1, x2, y2 }) => [[x1, y1], [x2, y2]]),
@@ -201,6 +223,8 @@
           const radius = Math.hypot(width, depth) / 2;
           return [[x - radius, y - radius], [x + radius, y + radius]];
         }),
+        ...nodes.map(({ x, y }) => [x, y]),
+        ...runs.flatMap(({ points }) => points.map(({ x, y }) => [x, y])),
       ];
       ui.view.replaceChildren();
       if (points.length === 0) {
@@ -276,6 +300,30 @@
           'font-size': size, 'font-weight': 650,
         }, name.slice(0, 75)));
       }
+      if (service && nodes.length) {
+        const group = svg('g', { 'data-services': system });
+        for (const { points, medium } of runs) {
+          group.append(svg('polyline', { points: points.map(({ x, y }) => `${x},${y}`).join(' '), fill: 'none',
+            stroke: service.media[medium].color, 'stroke-width': 2, 'stroke-linecap': 'round', 'stroke-linejoin': 'round',
+            'vector-effect': 'non-scaling-stroke' }));
+        }
+        const language = locale === 'pt-PT' ? 'pt' : 'en';
+        for (const node of nodes) {
+          const dot = svg('circle', { cx: node.x, cy: node.y, r: Math.min(.2, Math.max(.07, span * .01)), fill: 'var(--surface)',
+            stroke: service.color, 'stroke-width': 2, 'vector-effect': 'non-scaling-stroke' });
+          const kind = Object.hasOwn(service.kinds, node.kind) ? service.kinds[node.kind][language] : '';
+          dot.append(svg('title', {}, String(node.label || kind).slice(0, 95)));
+          group.append(dot);
+        }
+        ui.view.append(group);
+        for (const medium of new Set(runs.map((run) => run.medium))) {
+          const item = document.createElement('li');
+          const swatch = document.createElement('span');
+          swatch.style.backgroundColor = service.media[medium].color;
+          item.append(swatch, service.media[medium][language]);
+          ui.legend.append(item);
+        }
+      }
     }
 
     function render() {
@@ -283,8 +331,9 @@
       const area = Number.isFinite(analysis?.area) ? format(analysis.area) : '—';
       ui.title.textContent = project.name;
       ui.metrics.textContent = strings().metric(area, project.levels.length, rooms);
-      const current = project.levels.find(({ id }) => id === ui.levels.value) ??
+      const current = project.levels.find(({ id }) => id === (initialLevel || ui.levels.value)) ??
         project.levels.find(({ id }) => id === project.levelId) ?? project.levels[0];
+      initialLevel = '';
       const options = project.levels.map((level) => {
         const option = document.createElement('option');
         option.value = level.id;
@@ -294,6 +343,13 @@
       ui.levels.replaceChildren(...options);
       ui.levels.value = current.id;
       ui.levelField.hidden = project.levels.length < 2;
+      const available = Object.keys(serviceProfile).filter((id) => project.levels.some(({ services }) => services?.[id]?.nodes?.length));
+      const language = locale === 'pt-PT' ? 'pt' : 'en';
+      const wanted = initialLayer || ui.layers.value;
+      ui.layers.replaceChildren(new Option(strings().architecture, ''), ...available.map((id) => new Option(serviceProfile[id][language], id)));
+      ui.layers.value = available.includes(wanted) ? wanted : '';
+      ui.layerField.hidden = !available.length;
+      initialLayer = '';
       ui.view.removeAttribute('hidden');
       draw(current);
       ui.actions.hidden = false;
@@ -338,6 +394,10 @@
       if (validProject(structured?.project)) {
         if (structured.project.name !== project?.name) ui.levels.value = '';
         project = structured.project;
+        if (Array.isArray(structured.serviceChanges)) {
+          const changed = structured.serviceChanges.find(({ result }) => result === 'generated' || result === 'edited');
+          if (changed) { initialLayer = changed.system; initialLevel = changed.levelId; }
+        }
         ui.raw.value = JSON.stringify({ app: 'Casovara', version: 1, project });
       }
       if (structured?.analysis && typeof structured.analysis === 'object') analysis = structured.analysis;
@@ -386,6 +446,7 @@
     });
 
     ui.levels.addEventListener('change', () => render());
+    ui.layers.addEventListener('change', () => render());
     ui.download.addEventListener('click', () => {
       if (!project) return;
       const url = URL.createObjectURL(new Blob([ui.raw.value], { type: 'application/json' }));

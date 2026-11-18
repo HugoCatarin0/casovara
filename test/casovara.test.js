@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { after, before, test } from 'node:test';
 import { estimateProject, formatMoney, formatNumber, systems } from '../public/core.js';
 import { makeItem, modelFaces } from '../public/builder-engine.js';
+import { generateServices } from '../public/building-services.js';
 import { detectLocale, languagePreferences } from '../public/locales.js';
 import { makeTemplate, templates } from '../public/templates.js';
 import { createApp } from '../server.js';
@@ -122,6 +123,8 @@ test('Projects persist as private files and survive a new server instance', asyn
   assert.deepEqual(await first.json(), []);
   const visitor = cookie(first);
   const project = makeTemplate('patio', 'pt-PT');
+  const floor = project.levels[0];
+  floor.services = { plumbing: generateServices(floor, 'plumbing') };
   const invalid = await api('/api/projects', 'POST', { ...project, levelId: 'absent' }, visitor);
   assert.equal(invalid.status, 422);
   const created = await api('/api/projects', 'POST', project, visitor);
@@ -134,6 +137,7 @@ test('Projects persist as private files and survive a new server instance', asyn
   assert.equal(updated.id, original.id);
   assert.equal(updated.createdAt, original.createdAt);
   assert.equal(updated.name, 'Casa de teste');
+  assert.deepEqual(updated.levels[0].services, floor.services);
   const stored = await readdir(join(dir, visitor.split('=')[1]));
   assert.deepEqual(stored, [original.id + '.json']);
   const restart = createApp({ storagePath: dir });

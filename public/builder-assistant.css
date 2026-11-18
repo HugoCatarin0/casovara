@@ -273,6 +273,7 @@
 }
 .cva-split-controls {
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: .35rem;
   margin-bottom: .48rem;
 }
@@ -319,6 +320,18 @@
   background-size: 13px 13px;
   overflow: hidden;
 }
+.cva-service-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .3rem .65rem;
+  padding: 0;
+  margin: 0 0 .5rem;
+  list-style: none;
+  color: #395870;
+  font-size: .72rem;
+}
+.cva-service-legend li { display: flex; align-items: center; gap: .28rem; }
+.cva-service-legend span { width: .75rem; height: .18rem; border-radius: .12rem; }
 .cva-preview svg {
   display: block;
   box-sizing: border-box;

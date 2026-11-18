@@ -1,4 +1,6 @@
 import { furnitureModel, shade } from './model-furniture.js';
+import { appendModelServices } from './model-services.js';
+import { normalizeBuildingServices } from './building-services.js';
 import { elements, normalizeObjectCatalogRef } from './object-catalog.js';
 import { groundShadow, lightSurface, simulatorDefaults, sunSurfaceColor, sunVector } from './simulator.js';
 import { effectiveWallHeight, openingVertical, wallAppearance, wallBaseOffset } from './wall-spec.js';
@@ -123,6 +125,7 @@ export function normalizeProject(input, systemIds, isPt) {
     measurements: list(level.measurements).map((measure) => ({
       id: uniqueId(measure.id, used), x1: numeric(measure.x1, 0), y1: numeric(measure.y1, 0), x2: numeric(measure.x2, 0), y2: numeric(measure.y2, 0),
     })),
+    ...(Object.hasOwn(level, 'services') ? { services: normalizeBuildingServices(level.services) } : {}),
   }));
   if (!levels.length) throw new Error('Invalid project');
   return {
@@ -164,12 +167,20 @@ export function levelBounds(level) {
     const radius = Math.hypot(width, depth) / 2;
     points.push({ x: x - radius, y: y - radius }, { x: x + radius, y: y + radius });
   }
-  if (!points.length) return { x: -5, y: -3.5, width: 10, height: 7 };
-  const xs = points.map(({ x }) => x);
-  const ys = points.map(({ y }) => y);
-  const x = Math.min(...xs);
-  const y = Math.min(...ys);
-  return { x, y, width: Math.max(1, Math.max(...xs) - x), height: Math.max(1, Math.max(...ys) - y) };
+  for (const network of Object.values(level.services ?? {})) {
+    for (const node of network?.nodes ?? []) points.push(node);
+    for (const run of network?.runs ?? []) for (const vertex of run.points ?? []) points.push(vertex);
+  }
+  let x = Infinity, y = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const point of points) {
+    if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) continue;
+    x = Math.min(x, point.x);
+    y = Math.min(y, point.y);
+    maxX = Math.max(maxX, point.x);
+    maxY = Math.max(maxY, point.y);
+  }
+  return x === Infinity ? { x: -5, y: -3.5, width: 10, height: 7 }
+    : { x, y, width: Math.max(1, maxX - x), height: Math.max(1, maxY - y) };
 }
 
 function unionArea(rooms) {
@@ -192,7 +203,10 @@ export function projectArea(project) {
   return project.levels.reduce((total, level) => total + unionArea(level.rooms.filter((room) => room.type !== 'outdoor')), 0);
 }
 
-export function modelFaces(project, levelId, cutaway, { scope = 'through', roof: showRoof = true, selected = null, site = false, simulator } = {}) {
+export function modelFaces(project, levelId, cutaway, {
+  scope = 'through', roof: showRoof = true, selected = null, site = false, simulator,
+  services = [], selectedService = null,
+} = {}) {
   const index = project.levels.findIndex((level) => level.id === levelId);
   const visibleLevels = scope === 'all' ? project.levels : scope === 'level'
     ? project.levels.slice(Math.max(0, index), index + 1) : project.levels.slice(0, index + 1);
@@ -200,6 +214,8 @@ export function modelFaces(project, levelId, cutaway, { scope = 'through', roof:
   const settings = simulator ? { ...simulatorDefaults, ...simulator } : null;
   const sun = settings ? sunVector(settings.sunAzimuth, settings.sunElevation) : null;
   const faces = [];
+  const serviceFaces = [];
+  const displayedServices = new Set(services);
   let owner = null;
   const isSelected = () => owner && owner.kind === selected?.kind && owner.id === selected.id && owner.levelId === levelId;
   function face(points, fill, opacity = 1, { invert = false, preserve = false } = {}) {
@@ -498,6 +514,7 @@ export function modelFaces(project, levelId, cutaway, { scope = 'through', roof:
         captureShadows(casters, { x: room.x, y: room.y, width: room.w, depth: room.h, z: floorZ }, .21);
       }
     }
+    if (displayedServices.size) appendModelServices(serviceFaces, level, floorZ, displayedServices, selectedService);
     floorZ += level.height;
     owner = null;
     if (level === topLevel && !cutaway && showRoof && ['flat', 'gable', 'hipped'].includes(level.roof)) roof(level, floorZ);
@@ -506,7 +523,7 @@ export function modelFaces(project, levelId, cutaway, { scope = 'through', roof:
     if (settings) siteSurfaces(faces.slice());
     else legacySite();
   }
-  return faces;
+  return serviceFaces.length ? faces.concat(serviceFaces) : faces;
 
   function siteSurfaces(casters) {
     const ground = -.188;

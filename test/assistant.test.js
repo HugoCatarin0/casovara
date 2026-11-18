@@ -97,9 +97,37 @@ test('Browser agent tools expose the skill and stage a drawing for review', () =
   const create = registered.get('casovara_create_plan');
   assert.equal(create.execute(exampleInput()).staged, true);
   assert.equal(proposal.name, 'Study house');
+  const services = registered.get('casovara_design_services');
+  assert.equal(services.execute({ operations: [{ op: 'generate', systems: ['electrical'] }] }).staged, true);
+  assert.ok(proposal.levels[0].services.electrical.nodes.length);
   const lookup = registered.get('casovara_inspect_plan');
   assert.equal(lookup.annotations.readOnlyHint, true);
   assert.ok(lookup.execute({}).analysis);
   controller.abort();
   assert.equal(create.execute(exampleInput()).error, 'Cancelled.');
+});
+
+test('The assistant can propose building services without applying them to the editor snapshot', async () => {
+  const project = makeTemplate('costa', 'pt-PT');
+  let first = true;
+  const assistant = createDesignAssistant({ apiKey: 'test-key', allowRemote: false, fetchImpl: async (url, { body }) => {
+    const request = JSON.parse(body);
+    const tool = request.tools.find(({ name }) => name === 'casovara_design_services');
+    assert.ok(tool);
+    assert.equal(Object.hasOwn(tool.parameters.properties, 'project'), false);
+    if (first) {
+      first = false;
+      return reply([{ type: 'function_call', name: tool.name, call_id: 'services', arguments: JSON.stringify({
+        operations: [{ op: 'generate', systems: ['electrical', 'plumbing', 'vmc', 'airConditioning', 'radiantFloor'] }],
+      }) }]);
+    }
+    const output = JSON.parse(request.input.find(({ type, call_id }) => type === 'function_call_output' && call_id === 'services').output);
+    assert.equal(output.ok, true);
+    assert.equal(output.serviceChanges.length, 5);
+    return reply([{ type: 'message', content: [{ type: 'output_text', text: 'Proposta para cinco especialidades.' }] }]);
+  } });
+  const result = await assistant.run(browser, { project, locale: 'pt-PT', prompt: 'Gera as cinco redes e inclui piso radiante.' });
+  assert.equal(project.levels[0].services, undefined);
+  assert.equal(Object.keys(result.project.levels[0].services).length, 5);
+  assert.ok(result.analysis.levels[0].services.radiantFloor.runs.length);
 });
