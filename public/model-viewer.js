@@ -1,4 +1,4 @@
-import { cameraFrame, createModelRenderer, pickScene } from './model-renderer.js';
+import { createModelRenderer, pickScene } from './model-renderer.js';
 
 export const initialModelCamera = Object.freeze({
   azimuth: -38, elevation: 34, zoom: 1, panX: 0, panY: 0, projection: 'perspective',
@@ -27,7 +27,7 @@ export function modelImage(scene, camera, width = 1600, height = 1200) {
   return output;
 }
 
-export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, onPick }) {
+export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, onPick, pan = () => false }) {
   const camera = { ...initialModelCamera };
   const pointers = new Map();
   const listen = { signal };
@@ -36,6 +36,7 @@ export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, on
   let gesture = null;
   let tap = null;
   let last;
+  let displayed;
 
   function render() {
     animation = null;
@@ -49,9 +50,10 @@ export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, on
     const height = Math.max(2, Math.round(rect.height * density));
     const key = [current, width, height, ...Object.values(camera)];
     if (last?.every((value, index) => value === key[index])) return;
-    last = key;
     onEmpty(current.empty);
-    renderer.paint(current, atResolution(camera, width, height), width, height);
+    const frame = renderer.paint(current, atResolution(camera, width, height), width, height);
+    displayed = { scene: current, frame };
+    last = key;
     canvas.dataset.rendered = current.empty ? 'empty' : 'scene';
   }
 
@@ -83,7 +85,7 @@ export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, on
   }
 
   function physicalPosition(event) {
-    return { x: event.clientX, y: event.clientY, button: event.button, shift: event.shiftKey };
+    return { x: event.clientX, y: event.clientY, pan: pan() || event.button !== 0 || event.shiftKey };
   }
 
   function pinchState() {
@@ -95,7 +97,7 @@ export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, on
     if (pointers.size > 1) gesture = { mode: 'pinch', start: pinchState(), camera: { ...camera } };
     else if (pointers.size) {
       const start = pointers.values().next().value;
-      gesture = { mode: start.button !== 0 || start.shift ? 'pan' : 'orbit', start, camera: { ...camera } };
+      gesture = { mode: start.pan ? 'pan' : 'orbit', start, camera: { ...camera } };
     } else gesture = null;
     canvas.dataset.gesture = gesture?.mode ?? '';
   }
@@ -106,14 +108,15 @@ export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, on
     canvas.focus({ preventScroll: true });
     canvas.setPointerCapture(event.pointerId);
     const position = physicalPosition(event);
-    tap = !pointers.size && !position.button && !position.shift ? { ...position, id: event.pointerId } : null;
+    tap = !pointers.size && !position.pan
+      ? { ...position, id: event.pointerId, tolerance: event.pointerType === 'touch' ? 9 : 5 } : null;
     pointers.set(event.pointerId, position);
     startGesture();
   }, listen);
 
   canvas.addEventListener('pointermove', (event) => {
     if (!pointers.has(event.pointerId) || !gesture) return;
-    if (tap?.id === event.pointerId && Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > 5) tap = null;
+    if (tap?.id === event.pointerId && Math.hypot(event.clientX - tap.x, event.clientY - tap.y) > tap.tolerance) tap = null;
     const pointer = pointers.get(event.pointerId);
     pointers.set(event.pointerId, { ...pointer, x: event.clientX, y: event.clientY });
     const rect = canvas.getBoundingClientRect();
@@ -142,14 +145,11 @@ export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, on
 
   function end(event) {
     if (tap?.id === event.pointerId) {
-      const click = event.type === 'pointerup' && Math.hypot(event.clientX - tap.x, event.clientY - tap.y) <= 5;
+      const click = event.type === 'pointerup' && Math.hypot(event.clientX - tap.x, event.clientY - tap.y) <= tap.tolerance;
       tap = null;
-      if (click && canvas.dataset.rendered === 'scene') {
+      if (click && displayed) {
         const rect = canvas.getBoundingClientRect();
-        const { width, height } = canvas;
-        const current = scene();
-        const frame = cameraFrame(current, atResolution(camera, width, height), width, height);
-        onPick(pickScene(current, frame, (event.clientX - rect.left) * width / rect.width, (event.clientY - rect.top) * height / rect.height));
+        selectAt((event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
       }
     }
     if (pointers.delete(event.pointerId)) startGesture();
@@ -173,10 +173,17 @@ export function createModelViewer({ canvas, signal, scene, onCamera, onEmpty, on
     } else if (['+', '='].includes(event.key)) zoom(1.20);
     else if (event.key === '-') zoom(1 / 1.20);
     else if (event.key === 'Home' || event.key.toLowerCase() === 'f') fit();
+    else if (event.key === 'Enter' && !event.repeat && !pan()) selectAt(.5, .5);
     else return;
     event.preventDefault();
     event.stopPropagation();
   }, listen);
+
+  function selectAt(relativeX, relativeY) {
+    if (!displayed || relativeX < 0 || relativeX >= 1 || relativeY < 0 || relativeY >= 1) return;
+    const { scene, frame } = displayed;
+    onPick?.(pickScene(scene, frame, relativeX * frame.width, relativeY * frame.height));
+  }
 
   function dispose() {
     if (animation !== null) cancelAnimationFrame(animation);

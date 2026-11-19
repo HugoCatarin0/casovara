@@ -50,6 +50,53 @@ test('Agents can create and edit a slab on a chosen storey without changing its 
   assert.throws(() => edit(create().project, [{ op: 'set_level', slab: { mode: 'custom' } }]), /slab\.footprint/);
 });
 
+test('Agents can manage roof parameters and individual wall-linked and roof components', () => {
+  const { project } = create();
+  const wallId = project.levels[0].walls[0].id;
+  const draft = edit(project, [
+    { op: 'set_roof', roof: { pitch: 38, eavesOverhang: .42, covering: 'metal', color: '#45506B' } },
+    { op: 'add_structure', element: { id: 'skylight', type: 'roofWindow', width: .84, u: .3, v: .4 } },
+    { op: 'add_structure', element: { id: 'flue', type: 'chimney', shape: 'round', kind: 'vent', reference: 'ridge' } },
+    { op: 'add_structure', element: { id: 'rain', type: 'gutter', edge: 'front', downspout: false } },
+    { op: 'add_structure', element: { id: 'footing', type: 'foundation', wallId, bottom: -1.24 } },
+  ]);
+  const [level] = draft.analysis.levels;
+  assert.equal(level.pitch, 38);
+  assert.equal(level.roof, 'gable');
+  assert.deepEqual(level.roofSpec, { eavesOverhang: .42, gableOverhang: .28, offset: 0, covering: 'metal', color: '#45506b' });
+  assert.deepEqual(level.structure.map(({ id }) => id), ['skylight', 'flue', 'rain', 'footing']);
+  assert.equal(level.structure[3].wallId, wallId);
+  assert.equal(project.levels[0].structure, undefined);
+
+  const changed = edit(draft.project, [
+    { op: 'set_roof', roof: { color: null } },
+    { op: 'update_structure', id: 'skylight', element: { height: 1.4 } },
+    { op: 'delete_structure', id: 'flue' },
+    { op: 'delete', id: wallId },
+  ]);
+  assert.equal(changed.analysis.levels[0].roofSpec.color, undefined);
+  assert.deepEqual(changed.analysis.levels[0].structure.map(({ id }) => id), ['skylight', 'rain']);
+  assert.equal(changed.analysis.levels[0].structure[0].height, 1.4);
+  assert.throws(() => edit(project, [{ op: 'add_structure', element: { type: 'foundation', wallId: 'neither-wall' } }]), /foundation requires a wall ID/);
+  assert.throws(() => edit(project, [{ op: 'add_structure', element: { type: 'gutter', width: 2 } }]), /element.width/);
+});
+
+test('Agents can change and inspect the frame colour, opening hand and window leaves', () => {
+  const { project } = create();
+  const { id } = project.levels[0].items.find((item) => item.type === 'window');
+  const draft = edit(project, [{
+    op: 'update_opening', id, opening: { leaves: 3, handing: 'right', frameColor: '#8F0A14' },
+  }]);
+  const changed = draft.analysis.levels[0].items.find((item) => item.id === id);
+  assert.equal(changed.leaves, 3);
+  assert.equal(changed.handing, 'right');
+  assert.equal(changed.frameColor, '#8f0a14');
+  const reset = edit(draft.project, [{ op: 'update_opening', id, opening: { frameColor: null } }]);
+  const item = reset.project.levels[0].items.find((item) => item.id === id);
+  assert.equal(item.opening.frameColor, undefined);
+  assert.equal(item.opening.leaves, 3);
+});
+
 test('Construction tooling generates, inspects and edits an isolated, resource-constrained programme', () => {
   const { project } = create();
   const tool = (operations, current = project) => runDesignTool('casovara_plan_construction', { project: current, operations });

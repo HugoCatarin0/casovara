@@ -9,6 +9,7 @@ import { generateServices } from '../public/building-services.js';
 import { generateConstructionPlan } from '../public/construction-tasks.js';
 import { detectLocale, languagePreferences } from '../public/locales.js';
 import { makeTemplate, templates } from '../public/templates.js';
+import { normalizeRoofSpec, normalizeStructure } from '../public/structure-elements.js';
 import { createApp } from '../server.js';
 
 test('Selects the three locales using language preference and country', () => {
@@ -66,8 +67,8 @@ test('Roof type, pitch, floor finishes and ceilings alter the 3D model', () => {
   level.pitch = 42;
   assert.notDeepEqual(full(), gable);
   level.roof = 'hipped';
-  assert.ok(full().some((face) => face.fill === '#a66853'));
-  assert.ok(modelFaces(project, level.id, true).every((face) => face.fill !== '#a66853'));
+  assert.ok(full().filter((face) => face.owner?.kind === 'roof').length > 4);
+  assert.ok(modelFaces(project, level.id, true).every((face) => face.owner?.kind !== 'roof'));
   const withoutStairs = full().length;
   level.items.push(makeItem('stair', 2, 2), makeItem('rail', 4, 2));
   assert.ok(full().length > withoutStairs + 10);
@@ -131,6 +132,12 @@ test('Projects persist as private files and survive a new server instance', asyn
   editedCable.surface = 'ceiling';
   editedCable.points = [{ x: 2, y: 1 }, { x: 5, y: 1 }];
   floor.slab = { mode: 'custom', thickness: .245, footprint: { x: -.3, y: -.2, width: 9.4, depth: 6.8 } };
+  floor.roofSpec = normalizeRoofSpec({ covering: 'metal', eavesOverhang: .45, color: '#414D5A' });
+  floor.structure = normalizeStructure([
+    { type: 'roofWindow', id: 'claraboia', width: .7, v: .29 },
+    { type: 'gutter', id: 'caleira', edge: 'back', downspout: false },
+    { type: 'foundation', id: 'sapata', wallId: floor.walls[0].id, width: .9 },
+  ], floor);
   floor.services.radiantFloor = generateServices(floor, 'radiantFloor', { radiantPattern: 'serpentine' });
   assert.ok(floor.services.radiantFloor.runs.some(({ pattern }) => pattern === 'serpentine'));
   assert.ok(floor.services.radiantFloor.runs.some(({ port }) => port === 1));
@@ -148,6 +155,8 @@ test('Projects persist as private files and survive a new server instance', asyn
   assert.equal(updated.name, 'Casa de teste');
   assert.deepEqual(updated.levels[0].services, floor.services);
   assert.deepEqual(updated.levels[0].slab, floor.slab);
+  assert.deepEqual(updated.levels[0].roofSpec, floor.roofSpec);
+  assert.deepEqual(updated.levels[0].structure, floor.structure);
   assert.deepEqual(updated.constructionPlan, project.constructionPlan);
   const stored = await readdir(join(dir, visitor.split('=')[1]));
   assert.deepEqual(stored, [original.id + '.json']);

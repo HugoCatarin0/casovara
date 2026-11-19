@@ -1,0 +1,89 @@
+.cv-panel-section.cv-structure-inspector { padding: 0; }
+.cv-structure-heading {
+  display: flex;
+  align-items: center;
+  gap: .64rem;
+  padding: .85rem .95rem;
+  border-bottom: 1px solid var(--studio-line);
+}
+.cv-structure-heading > div { min-width: 0; }
+.cv-structure-heading h2 { margin: 0; }
+.cv-structure-heading div > span { display: block; margin-top: .14rem; color: var(--studio-muted); font-size: .72rem; overflow-wrap: anywhere; }
+.cv-structure-icon {
+  display: grid;
+  flex: 0 0 2.1rem;
+  height: 2.1rem;
+  place-items: center;
+  border: 1px solid var(--studio-line);
+  border-radius: .48rem;
+  background: var(--studio-air);
+  color: var(--studio-green);
+}
+.cv-structure-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(6.5rem, 100%), 1fr));
+  gap: .35rem;
+  margin: 0;
+  padding: .67rem .95rem;
+  border-bottom: 1px solid var(--studio-line);
+  background: var(--studio-paper);
+}
+.cv-structure-metrics > div { min-width: 0; }
+.cv-structure-metrics dt { font-size: .68rem; line-height: 1.25; color: var(--studio-muted); }
+.cv-structure-metrics dd { margin: .23rem 0 0; font-size: .87rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.cv-structure-group { border-bottom: 1px solid var(--studio-line); }
+.cv-structure-group > summary {
+  display: flex;
+  align-items: center;
+  gap: .38rem;
+  min-height: 2.4rem;
+  padding: .37rem .95rem;
+  font-size: .77rem;
+  font-weight: 675;
+  color: var(--studio-green);
+  cursor: pointer;
+  list-style: none;
+}
+.cv-structure-group > summary::-webkit-details-marker { display: none; }
+.cv-structure-group > summary svg { transform: rotate(-90deg); flex: none; }
+.cv-structure-group[open] > summary svg { transform: none; }
+.cv-structure-group > summary:hover, .cv-structure-link:hover, .cv-structure-add:hover { background: var(--studio-air); }
+.cv-structure-fields { display: grid; gap: .62rem; padding: .02rem .95rem .78rem; }
+.cv-structure-inspector .cv-field { margin: 0; }
+.cv-structure-inspector .cv-input-wrap small { color: var(--studio-muted); white-space: nowrap; }
+.cv-structure-inspector .cv-field input[type=number] { font-variant-numeric: tabular-nums; }
+.cv-structure-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .54rem; }
+.cv-structure-colour { display: grid; justify-items: start; gap: .33rem; }
+.cv-structure-colour .cv-field { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: .65rem; }
+.cv-structure-colour .cv-field input[type=color] { width: 3.1rem; min-height: 2.25rem; padding: .22rem; cursor: pointer; }
+.cv-structure-toggle { display: flex; align-items: center; justify-content: space-between; min-height: 2rem; gap: .5rem; font-size: .76rem; }
+.cv-structure-toggle input { width: 1.08rem; height: 1.08rem; flex: none; accent-color: var(--studio-green); }
+.cv-structure-attachments { display: grid; gap: .24rem; }
+.cv-structure-attachments + .cv-structure-attachments { border-top: 1px solid var(--studio-line); padding-top: .36rem; }
+.cv-structure-attachment-head { display: flex; justify-content: space-between; align-items: center; gap: .55rem; font-size: .74rem; font-weight: 650; }
+.cv-structure-link, .cv-structure-add, .cv-structure-remove {
+  display: flex;
+  align-items: center;
+  gap: .44rem;
+  min-height: 2.05rem;
+  padding: .3rem .5rem;
+  border: 1px solid var(--studio-line);
+  border-radius: .35rem;
+  background: var(--studio-surface);
+  color: var(--studio-green);
+  font-size: .74rem;
+  text-align: left;
+  cursor: pointer;
+}
+.cv-structure-link { width: 100%; justify-content: space-between; }
+.cv-structure-link svg { flex: none; }
+.cv-structure-add { min-width: 2.05rem; justify-content: center; padding: .27rem; }
+.cv-structure-reset { width: auto; min-height: 1.75rem; }
+.cv-structure-footer { padding: .6rem .95rem; }
+.cv-structure-remove { color: #a33a2b; border-color: transparent; margin-inline-start: -.5rem; }
+.cv-structure-remove:hover { background: #f9ede8; }
+.cv-structure-inspector :is(button, summary, h2):focus-visible { outline: 2px solid #2d6d95; outline-offset: 2px; }
+@media (pointer: coarse) {
+  .cv-structure-link, .cv-structure-add, .cv-structure-remove { min-height: 2.75rem; }
+  .cv-structure-add { min-width: 2.75rem; }
+}

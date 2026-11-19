@@ -10,6 +10,8 @@ import { estimateProject, formatMoney, formatNumber, projectApi, systems } from 
 import { makeTemplate, templates } from './templates.js';
 import { applyWallAssembly, effectiveWallHeight, getWallSpec, normalizeOpening, normalizeWallSpec, wallAssemblies, wallSpecThickness } from './wall-spec.js';
 import { renderOpeningFields, renderWallInspector, syncWallInspector } from './wall-inspector.js';
+import { renderStructureInspector, structureElementTitle, syncStructureInspector } from './structure-inspector.js';
+import { gutterEdges, normalizeRoofSpec, normalizeStructure, normalizeStructureElement, roofFrame, roofSpecFor, roofTypes, structureFootprint, structureLimits } from './structure-elements.js';
 import { normalizeSlab, slabFor, slabFootprints, slabLimits, slabModes, slabOutline } from './slab.js';
 import { compileScene } from './model-renderer.js';
 import { createModelViewer, initialModelCamera, modelImage } from './model-viewer.js';
@@ -91,7 +93,7 @@ const labels = {
   modelScope: ['Edifício visível', 'Visible building'], modelAll: ['Casa inteira', 'Whole house'], modelThrough: ['Até ao piso atual', 'Up to current level'], modelLevel: ['Só o piso atual', 'Current level only'],
   showRoof: ['Mostrar cobertura', 'Show roof'], modelFit: ['Enquadrar modelo', 'Fit model'], modelCanvas: ['Modelo 3D', '3D model'], section: ['Corte', 'Cutaway'],
   perspective: ['Perspetiva', 'Perspective'], orthographic: ['Ortogonal', 'Orthographic'], modelProjection: ['Projeção da vista', 'View projection'],
-  orbitHint: ['Arraste para rodar. Clique para selecionar. Use a roda ou dois dedos para aproximar.', 'Drag to orbit. Click to select. Use the wheel or two fingers to zoom.'],
+  orbitHint: ['Arrasta para rodar. Clica ou toca para selecionar. Enter seleciona ao centro.', 'Drag to orbit. Click or tap to select. Enter selects at the centre.'],
   orbitHelp: ['Setas para rodar, Shift e setas para deslocar, mais e menos para aproximar e afastar.', 'Arrow keys orbit, Shift and arrows pan, plus and minus zoom.'],
   topView: ['Topo', 'Top'], isoView: ['Vista inicial', 'Starting view'], modelOrient: ['Orientar e guardar vistas', 'Orientation and saved views'],
   splitResize: ['Redimensionar planta e modelo', 'Resize plan and model'], modelRotate: ['Rotação e aproximação', 'Orbit and zoom'],
@@ -135,7 +137,6 @@ const labels = {
   applyFinish: ['Clique ou toque num compartimento para aplicar o acabamento.', 'Click or tap a room to apply the finish.'], shutter: ['Elementos', 'Elements'], info: ['Informações de projeto', 'Project information'], splitUpdate: ['Dividir compartimento', 'Divide room'], detectRoom: ['Detetar compartimento', 'Detect room'],
   summary: ['Resumo', 'Summary'], projectStatus: ['Estado do projeto', 'Project status'], referenceControls: ['Imagem em planta', 'Plan image'], imageOpacity: ['Opacidade da imagem', 'Image opacity'], imageWidth: ['Largura à escala', 'Scaled width'],
   allLevels: ['Todos os pisos', 'All levels'], currentLevel: ['Piso atual', 'Current level'], north: ['Norte', 'North'], autoDimensions: ['Cotas automáticas', 'Automatic dimensions'], wallChain: ['Cotar parede', 'Dimension wall'],
-  roofPitch: ['Inclinação', 'Pitch'], flat: ['Plana', 'Flat'], gable: ['Duas águas', 'Gable'], hipped: ['Quatro águas', 'Hip'], none: ['Nenhuma', 'None'], roofs: ['Definições de cobertura', 'Roof settings'],
   flooring: ['Acabamento', 'Finish'], wood: ['Madeira', 'Timber'], ceramic: ['Cerâmica', 'Ceramic'], concrete: ['Betão', 'Concrete'], stone: ['Pedra', 'Stone'], natural: ['Padrão', 'Default'],
   levelConfiguration: ['Configuração do piso', 'Level configuration'], align: ['Ferramentas de desenho', 'Drawing tools'], tabs: ['Modos de visualização', 'View modes'], levelSelect: ['Selecionar piso', 'Select level'],
   mode: ['Modo de desenho', 'Drawing mode'], reset: ['Terminar desenho', 'Finish drawing'], exportError: ['Não foi possível gerar o ficheiro.', 'Could not generate the file.'],
@@ -158,6 +159,12 @@ const structureGroups = [
   ['referenceGroup', ['image']],
 ];
 const fieldForMode = { plan: 'plan', '3d': 'view3d', split: 'split' };
+function planBox(points) {
+  if (!points.length) return null;
+  const xs = points.map(([x]) => x), ys = points.map(([, y]) => y);
+  const x = Math.min(...xs), y = Math.min(...ys);
+  return { x, y, width: Math.max(...xs) - x, depth: Math.max(...ys) - y };
+}
 const modeKeys = { '1': 'plan', '2': 'view3d', '3': 'split' };
 const shortToolLabels = { pan: 'shortPan', wall: 'shortWall', angled: 'shortAngled', room: 'shortRoom', detect: 'shortDetect', divide: 'shortDivide', image: 'shortImage' };
 function normalizedAngle(angle) {
@@ -255,6 +262,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       entry.annotations = Array.isArray(source?.annotations) ? source.annotations.filter((item) => item && Number.isFinite(item.x) && Number.isFinite(item.y)).slice(0, 200).map((item) => ({ id: typeof item.id === 'string' && /^[\w-]{1,90}$/.test(item.id) ? item.id : uid(), x: clamp(item.x, -500, 500), y: clamp(item.y, -500, 500), text: typeof item.text === 'string' ? item.text.slice(0, 160) : '', north: !!item.north })) : [];
       entry.roof = ['flat', 'gable', 'hipped'].includes(source?.roof) ? source.roof : 'none';
       entry.pitch = Number.isFinite(source?.pitch) ? clamp(source.pitch, 5, 65) : 30;
+      if (Object.hasOwn(source ?? {}, 'roofSpec')) entry.roofSpec = normalizeRoofSpec(source.roofSpec);
+      if (Object.hasOwn(source ?? {}, 'structure')) entry.structure = normalizeStructure(source.structure, entry);
       entry.ceiling = !!source?.ceiling;
       entry.rooms.forEach((room, roomIndex) => {
         const original = source?.rooms?.find?.((item) => item?.id === room.id) ?? source?.rooms?.[roomIndex];
@@ -501,7 +510,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }, listen);
   const bearings = isPt ? ['S', 'SE', 'E', 'NE', 'N', 'NO', 'O', 'SO'] : ['S', 'SE', 'E', 'NE', 'N', 'NW', 'W', 'SW'];
   const viewer = createModelViewer({
-    canvas: model, signal: controller.signal, scene: currentModelScene,
+    canvas: model, signal: controller.signal, scene: currentModelScene, pan: () => tool === 'pan',
     onCamera: ({ azimuth, elevation, projection }) => {
       root.querySelector('[data-role="bearing"]').textContent = `${bearings[Math.round(azimuth / 45) % 8]} · ${Math.round(elevation)}°`;
       root.querySelector('.cv-model-bearing').style.setProperty('--bearing', `${-azimuth}deg`);
@@ -509,6 +518,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     },
     onEmpty: (empty) => { root.querySelector('[data-role="empty-model"]').hidden = !empty; },
     onPick: (picked) => {
+      if (tool === 'pan') return;
+      if (studioPanel.contains(document.activeElement) && document.activeElement.matches('input, textarea')) document.activeElement.blur();
       if (picked?.kind === 'service-node' || picked?.kind === 'service-run') {
         if (picked.levelId !== project.levelId) switchLevel(picked.levelId);
         showServices();
@@ -518,13 +529,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       }
       if (!picked) {
         if (selected) { selected = null; render(); }
+        else if (tool === 'service' && servicesEditor.selection()) { servicesEditor.clear(); refreshServices(); }
         return;
       }
-      if (picked.levelId !== project.levelId) switchLevel(picked.levelId);
-      if (picked.kind === 'slab') { setTool('slab'); return; }
-      selected = { kind: picked.kind, id: picked.id };
-      inspectorOpen = true;
-      setActiveShape();
+      inspectElement(picked.kind, picked.id, picked.levelId);
     },
   });
   const resize = new ResizeObserver(() => paint());
@@ -860,7 +868,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         }
         preview = { ...project, levels: project.levels.map((floor) => floor === current ? { ...floor, ...changes } : floor) };
       }
-      const faces = modelFaces(preview, project.levelId, cutaway, { scope: modelScope, roof: showRoof, selected: picked, simulator,
+      const faces = modelFaces(preview, project.levelId, cutaway, { scope: modelScope, roof: showRoof, ceiling: showRoof || picked?.kind === 'ceiling', selected: picked, simulator,
         services: servicesEditor.layers, selectedService: servicesEditor.selection() });
       sceneCache = { key, scene: compileScene(faces) };
     }
@@ -1024,16 +1032,53 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
   function drawSlabPlan(floor, unit, forExport) {
     const { mode } = slabFor(floor);
-    const active = tool === 'slab' && !forExport;
-    if (!active && mode !== 'custom') return '';
+    const active = !forExport && (tool === 'slab' || selected?.kind === 'slab');
+    if (!active && mode !== 'custom' && (forExport || category !== 'floors')) return '';
     const footprints = slabFootprints(floor);
     if (!footprints.length) return '';
     const outline = slabOutline(footprints).map(([x1, y1, x2, y2]) => `M${x1} ${y1}L${x2} ${y2}`).join('');
-    const hit = !forExport && !active ? `<path data-slab-outline d="${outline}" fill="none" stroke="transparent" stroke-width="${unit * 12}" pointer-events="stroke"/>` : '';
+    const hit = !forExport && tool === 'select' ? `<path data-shape="slab" data-id="${str(floor.id)}" d="${outline}" fill="none" stroke="transparent" stroke-width="${unit * 12}" pointer-events="stroke"/>` : '';
     return `<g data-plan-slab="${mode}" pointer-events="none">
       ${active ? footprints.map(({ x, y, width, depth }) => `<rect x="${x}" y="${y}" width="${width}" height="${depth}" fill="#35759d" opacity="${slabDrawing ? '.07' : '.12'}"/>`).join('') : ''}
       <path d="${outline}" fill="none" stroke="#28688f" stroke-width="${unit * (active ? 1.8 : 1.1)}" stroke-dasharray="${unit * 6} ${unit * 3}"/>
       ${hit}</g>`;
+  }
+  function drawStructurePlan(floor, unit) {
+    const frame = roofFrame(floor);
+    const selectedKind = selected?.kind;
+    const activePart = selectedKind === 'structure' && entity();
+    const roofLayer = category === 'roof' || selectedKind === 'roof' || activePart && activePart.type !== 'foundation';
+    const shape = (kind, id, points, title, { filled = false, dash = false } = {}) => {
+      if (!points?.length) return '';
+      const active = selectedKind === kind && selected.id === id;
+      const outline = points.map(([x, y]) => `${x},${y}`).join(' ');
+      return `<g class="cv-plan-structure" data-shape="${kind}" data-id="${str(id)}" data-highlight="${active}"><title>${str(title)}</title>
+        <polygon points="${outline}" fill="${filled ? 'var(--cv-structure-fill)' : 'none'}" stroke="var(--cv-structure-stroke)" stroke-width="${unit * (active ? 2.2 : 1.25)}" ${dash ? `stroke-dasharray="${unit * 5} ${unit * 3}"` : ''} pointer-events="none"/>
+        <polygon points="${outline}" fill="${filled ? 'transparent' : 'none'}" stroke="transparent" stroke-width="${unit * 11}" pointer-events="${filled ? 'all' : 'stroke'}"/></g>`;
+    };
+    const parts = (floor.structure ?? []).filter((part) => part.type === 'foundation'
+      ? category === 'structure' || part.id === activePart?.id
+      : roofLayer);
+    const accessories = parts.map((part) => shape('structure', part.id, structureFootprint(floor, part, frame),
+      structureElementTitle('structure', part, locale), { filled: part.type === 'roofWindow' || part.type === 'chimney', dash: part.type === 'foundation' })).join('');
+    let roof = '';
+    if (roofLayer && frame) {
+      const { x, y, width, depth, world, span, length, inset } = frame;
+      roof = shape('roof', floor.id, [[x, y], [x + width, y], [x + width, y + depth], [x, y + depth]], tr('roof'), { dash: true });
+      if (floor.roof !== 'flat') {
+        const [a, b] = [world(inset, span / 2), world(length - inset, span / 2)];
+        roof += `<line data-shape="roof" data-id="${str(floor.id)}" x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="transparent" stroke-width="${unit * 12}" pointer-events="stroke"/>
+          <line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="${selectedKind === 'roof' ? draftingInk.accent : '#436980'}" stroke-width="${unit * 1.5}" stroke-dasharray="${unit * 6} ${unit * 3}" pointer-events="none"/>`;
+      }
+    }
+    let ceiling = '';
+    if (floor.ceiling && (category === 'ceiling' || selectedKind === 'ceiling')) {
+      ceiling = slabOutline(slabFootprints(floor)).map(([x1, y1, x2, y2]) => `M${x1} ${y1}L${x2} ${y2}`).join('');
+      if (ceiling) ceiling = `<g data-shape="ceiling" data-id="${str(floor.id)}"><title>${tr('ceiling')}</title>
+        <path d="${ceiling}" fill="none" stroke="${selectedKind === 'ceiling' ? draftingInk.accent : '#557586'}" stroke-width="${unit * 1.4}" stroke-dasharray="${unit * 6} ${unit * 3}" pointer-events="none"/>
+        <path d="${ceiling}" fill="none" stroke="transparent" stroke-width="${unit * 12}" pointer-events="stroke"/></g>`;
+    }
+    return ceiling + roof + accessories;
   }
   function draftLayer(forExport = false, unit = .022, compact = false, current = planFloor(forExport)) {
     const activeShape = (kind, id) => !forExport && selected?.kind === kind && selected.id === id;
@@ -1060,7 +1105,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const activeWall = technical && !forExport && selected?.kind === 'walls' ? visibleWalls.find((wall) => selected.id === wall.id) : null;
     const activeDimension = activeWall ? selectedWallDimension(activeWall, unit, n) : '';
     const annotations = (current.annotations ?? []).map((item) => annotationShape(item, activeShape('annotations', item.id))).join('');
-    return `${technical ? planPatterns() : ''}${background}${rooms}${drawSlabPlan(current, unit, forExport)}${reference}${outline}${walls}${items}${captions}${tags?.markup ?? ''}${inside}${measures}${annotations}${activeDimension}`;
+    return `${technical ? planPatterns() : ''}${background}${rooms}${drawSlabPlan(current, unit, forExport)}${reference}${outline}${!forExport ? drawStructurePlan(current, unit) : ''}${walls}${items}${captions}${tags?.markup ?? ''}${inside}${measures}${annotations}${activeDimension}`;
   }
 
   function roomHandles(room) {
@@ -1225,8 +1270,34 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (viewMode !== 'plan') modelPaint();
   }
 
+  function elementRecord(floor, kind, id) {
+    if (['roof', 'slab', 'ceiling'].includes(kind)) return floor.id === id ? floor : undefined;
+    const entries = floor[kind];
+    return Array.isArray(entries) ? entries.find((item) => item.id === id) : undefined;
+  }
   function entity() {
-    return selected && level()[selected.kind]?.find((item) => item.id === selected.id);
+    return selected ? elementRecord(level(), selected.kind, selected.id) : null;
+  }
+  function inspectElement(kind, id, floorId = project.levelId) {
+    const floor = viewLevel(project, floorId);
+    if (!floor || !elementRecord(floor, kind, id)) return false;
+    if (floor.id !== project.levelId) switchLevel(floor.id);
+    if (selected?.kind !== kind || selected.id !== id) {
+      const panel = studioPanel.querySelector('.cv-panel-body');
+      if (panel) panel.scrollTop = 0;
+    }
+    selected = { kind, id };
+    servicesEditor.clear();
+    if (kind === 'ceiling') {
+      showRoof = false;
+      cutaway = false;
+      if (modelScope === 'all') modelScope = 'through';
+    }
+    inspectorOpen = true;
+    pendingPoint = hoverPoint = null;
+    slabDrawing = false;
+    setActiveShape();
+    return true;
   }
   function profile() { return systems.find(({ id }) => id === project.systemId) ?? systems[0]; }
   function field(name, key, value, { type = 'text', step = '.01', min, max, unit = '' } = {}) {
@@ -1256,9 +1327,17 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     </section>`;
   }
   function propertiesPanel() {
-    if (tool === 'slab') return slabPanel();
+    if (tool === 'slab' || selected?.kind === 'slab') return slabPanel();
     const record = entity();
     const current = level();
+    if (selected?.kind === 'roof' || selected?.kind === 'structure' && record) {
+      return renderStructureInspector(selected.kind, record, current, { locale, icon });
+    }
+    if (selected?.kind === 'ceiling') {
+      return `<section class="cv-panel-section"><p class="cv-kicker">${str(current.name)}</p><h2>${tr('ceiling')}</h2>
+        ${infoRows([[tr('levelHeight'), `${n(current.height)} m`]])}
+        <label class="cv-wall-toggle"><span>${isPt ? 'Teto neste piso' : 'Ceiling on this storey'}</span><input type="checkbox" data-field="ceilingEnabled" ${current.ceiling ? 'checked' : ''}></label></section>`;
+    }
     if (record) {
       let detail = '';
       let title = '';
@@ -1271,19 +1350,28 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       }
       if (selected.kind === 'walls') {
         title = isPt ? 'Parede' : 'Wall';
-        detail = wallDetail(record);
+        const foundation = current.structure?.find(({ type, wallId }) => type === 'foundation' && wallId === record.id);
+        detail = wallDetail(record) + (foundation
+          ? `<button type="button" class="cv-button cv-subtle" data-action="structure-select:structure" data-id="${str(foundation.id)}">${isPt ? 'Selecionar fundação' : 'Select foundation'}</button>`
+          : `<button type="button" class="cv-button cv-subtle" data-action="structure-add:foundation">${isPt ? 'Adicionar fundação corrida' : 'Add strip foundation'}</button>`);
       }
       if (selected.kind === 'items') {
         const profile = elements[record.type];
         title = record.catalogRef?.name ?? localized(profile);
-        allowRotation = true;
-        detail = `<div class="cv-row">${numberField('shape:width', 'width', record.width, 'm', 0.1, 20)}${numberField('shape:depth', 'depth', record.depth, 'm', 0.05, 20)}</div>`;
+        allowRotation = !profile.opening;
         const rotation = numberField('shape:angle', 'angle', record.angle, '°', -360, 360, '.1');
-        if (profile.opening) detail += rotation + renderOpeningFields(record, locale);
+        if (profile.opening) {
+          const hit = findWall(record, current.walls, .15, record.width);
+          const code = openingsIndex(current.items, isPt).get(record.id);
+          if (code) title = `${title} · ${code}`;
+          detail = renderOpeningFields(record, locale, hit && { ...hit, length: wallLength(hit.wall) });
+          if (!hit) detail += rotation;
+        }
         else {
           const height = profile.model || Number.isFinite(record.height) ? numberField('shape:height', 'objectHeight', record.height ?? profile.height, 'm', .01, 12, '.001') : '';
           const product = record.catalogRef?.url ? `<p><a href="${str(record.catalogRef.url)}" target="_blank" rel="noopener noreferrer">${tr('productLink')} · ${str(record.catalogRef.productId)}</a></p>` : '';
-          detail += `<div class="cv-row">${rotation}${height}</div>${product}<p class="cv-rotation-hint">${tr('rotationHint')}</p>`;
+          detail = `<div class="cv-row">${numberField('shape:width', 'width', record.width, 'm', 0.1, 20)}${numberField('shape:depth', 'depth', record.depth, 'm', 0.05, 20)}</div>
+            <div class="cv-row">${rotation}${height}</div>${product}<p class="cv-rotation-hint">${tr('rotationHint')}</p>`;
         }
       }
       if (selected.kind === 'measurements') {
@@ -1401,7 +1489,13 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       const openings = openingsIndex(floor.items, isPt);
       const rooms = floor.rooms.map(({ id, type, name }) => ({ id, title: name || localized(roomStyles[type]), kind: 'rooms', glyph: 'room' }));
       const items = floor.items.map(({ id, type, catalogRef }) => ({ id, title: [openings.get(id), catalogRef?.name ?? localized(elements[type])].filter(Boolean).join(' · '), kind: 'items', glyph: elements[type]?.opening ? type === 'door' || type === 'doubleDoor' ? 'door' : 'window' : 'furnish' }));
-      return [...rooms, ...items].filter(({ title }) => matches(`${title} ${floor.name}`)).map((entry) => ({ ...entry, floor }));
+      const walls = floor.walls.map((wall, index) => ({ id: wall.id, title: `${tr('wall')} ${index + 1} · ${n(wallLength(wall))} m`, kind: 'walls', glyph: 'wall' }));
+      const frame = roofFrame(floor);
+      const structure = (floor.structure ?? []).filter((part) => part.type === 'foundation' || frame)
+        .map((part) => ({ id: part.id, title: structureElementTitle('structure', part, locale), kind: 'structure', glyph: part.type === 'foundation' ? 'slab' : 'roof' }));
+      const surfaces = [['roof', frame, 'roof'], ['slab', slabFootprints(floor).length, 'slab'], ['ceiling', floor.ceiling, 'layers']]
+        .filter(([, exists]) => exists).map(([kind, , glyph]) => ({ id: floor.id, title: tr(kind), kind, glyph }));
+      return [...rooms, ...items, ...walls, ...structure, ...surfaces].filter(({ title }) => matches(`${title} ${floor.name}`)).map((entry) => ({ ...entry, floor }));
     }).slice(0, 32) : [];
     const elementsHtml = found.map(({ id, title, kind, glyph, floor }) => `<button type="button" class="cv-tool cv-command-entity" data-action="find-entity" data-command="true" data-id="${str(id)}" data-floor="${str(floor.id)}" data-kind="${kind}">${icon(glyph, 16)}<span>${str(title)}</span><small>${str(floor.name)}</small></button>`).join('');
     const toolsHtml = actions.map(([action, glyph, key]) => action.startsWith('/')
@@ -1436,8 +1530,6 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     } else if (modal === 'confirm') {
       title = tr(currentModalData.title);
       content = `<p>${tr(currentModalData.detail)}</p><div class="cv-action-row"><button class="cv-button" type="button" data-action="close">${tr('cancel')}</button><button class="cv-button cv-danger" type="button" data-action="confirm">${tr(currentModalData.accept ?? 'delete')}</button></div>`;
-    } else if (modal === 'roofs') {
-      content = `<form class="cv-form" data-form="roof"><label class="cv-field">${tr('type')}<select name="type">${['none', 'flat', 'gable', 'hipped'].map((key) => `<option value="${key}" ${(level().roof ?? 'none') === key ? 'selected' : ''}>${tr(key)}</option>`).join('')}</select></label><label class="cv-field">${tr('roofPitch')} (°)<input name="pitch" type="number" min="5" max="65" step="1" required value="${level().pitch ?? 30}"></label><button class="cv-button cv-primary" type="submit">${tr('save')}</button></form>`;
     } else if (modal === 'flooring') {
       content = `<form class="cv-form" data-form="finish"><label class="cv-field">${tr('flooring')}<select name="finish">${['natural', ...Object.keys(finishes)].map((key) => `<option value="${key}">${tr(key)}</option>`).join('')}</select></label><button class="cv-button cv-primary" type="submit">${tr('save')}</button></form>`;
     } else if (modal === 'camera') {
@@ -1458,6 +1550,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     report: ['Relatório', 'Report'], 'duplicate-project': ['Duplicar projeto', 'Duplicate project'], 'mirror-project': ['Espelhar projeto', 'Mirror project'],
     mirrorSuffix: ['espelho', 'mirror'], copySuffix: ['cópia', 'copy'], openingWall: ['Aproxime o vão de uma parede com largura suficiente.', 'Move the opening near a wall wide enough to hold it.'],
     roomDetect: ['Não foi encontrado um compartimento retangular fechado neste ponto.', 'No enclosed rectangular room was found at this point.'],
+    structureLimit: ['Este piso atingiu o limite de elementos construtivos.', 'This storey has reached its limit of building elements.'],
+    noRoofSpace: ['Não há espaço livre na cobertura para este elemento.', 'No free space remains on the roof for this element.'],
+    gutterEdgesUsed: ['Todos os bordos já têm caleiras. Ajusta uma caleira existente no painel.', 'Every edge has a gutter. Edit an existing gutter in the panel.'],
     cannotDivide: ['Marque um ponto no interior de um compartimento.', 'Mark a point inside a room.'], tooSmall: ['Marque dois pontos mais afastados.', 'Mark two points further apart.'],
     levelLimit: ['O projeto já tem 20 pisos.', 'This project already has 20 levels.'], cameraLimit: ['O projeto já tem 30 vistas guardadas.', 'This project already has 30 saved views.'],
   };
@@ -1488,7 +1583,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       id = 'room';
     }
     tool = id;
-    if (viewMode === 'view3d' && !['select', 'slab'].includes(id)) viewMode = 'split';
+    if (viewMode === 'view3d' && !['select', 'pan', 'slab'].includes(id)) viewMode = 'split';
     if (id === 'slab') {
       category = 'floors';
       inspectorTab = 'properties';
@@ -1587,6 +1682,15 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       ({ x, y } = bounds);
       width = bounds.halfW * 2;
       height = bounds.halfH * 2;
+    } else if (['roof', 'slab', 'ceiling', 'structure'].includes(selected.kind)) {
+      const floor = level();
+      const frame = roofFrame(floor);
+      const footprint = selected.kind === 'structure' ? structureFootprint(floor, item, frame) : [];
+      const floorBounds = levelBounds(floor);
+      const bounds = planBox(footprint) ?? (selected.kind === 'roof' ? frame : null) ?? { ...floorBounds, depth: floorBounds.height };
+      ({ width, depth: height } = bounds);
+      x = bounds.x + width / 2;
+      y = bounds.y + height / 2;
     } else ({ x, y, width = 1, height = 1 } = item);
     const extent = fitExtent();
     camera.zoom = clamp(camera.zoom * .72 * Math.min(extent.width / (width + .5), extent.height / (height + .5)), .2, 7);
@@ -1599,6 +1703,18 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const center = (Math.min(...bounds.map((b) => b.x)) + Math.max(...bounds.map((b) => b.x + b.width))) / 2;
     const x = (value) => 2 * center - value;
     for (const entry of state.levels) {
+      const frame = roofFrame(entry);
+      if (frame) for (const part of entry.structure ?? []) {
+        if (part.type === 'gutter') {
+          const reversed = frame.alongX === ['front', 'back'].includes(part.edge);
+          if (reversed) [part.from, part.to] = [1 - part.to, 1 - part.from];
+          else part.edge = { front: 'back', back: 'front', left: 'right', right: 'left' }[part.edge];
+        }
+        if (part.type === 'roofWindow' || part.type === 'chimney') {
+          if (frame.alongX) part.u = 1 - part.u;
+          else part.v = 1 - part.v;
+        }
+      }
       for (const room of entry.rooms) room.x = x(room.x + room.w);
       for (const item of entry.items) { item.x = x(item.x); item.angle = 180 - item.angle; }
       for (const wall of [...entry.walls, ...entry.measurements]) {
@@ -1673,10 +1789,21 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
   function removeEntity() {
     if (!entity()) return false;
+    if (['roof', 'structure'].includes(selected.kind)) return removeStructure();
+    if (selected.kind === 'ceiling' || selected.kind === 'slab') {
+      const floor = level();
+      change(() => {
+        if (selected.kind === 'ceiling') floor.ceiling = false;
+        else floor.slab = { ...slabFor(floor), mode: 'none' };
+        selected = null;
+      });
+      return true;
+    }
     change(() => {
       if (selected.kind === 'rooms') detachRoomWalls(selected.id);
       if (selected.kind === 'walls') {
         const floor = level();
+        if (floor.structure) floor.structure = floor.structure.filter((part) => part.type !== 'foundation' || part.wallId !== selected.id);
         const remaining = floor.walls.filter((wall) => wall.id !== selected.id);
         floor.items = floor.items.filter((item) => !elements[item.type].opening ||
           findWall(item, floor.walls, .11, item.width)?.wall.id !== selected.id ||
@@ -1692,7 +1819,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (!shape || !plane.contains(shape)) return null;
     const kind = shape.dataset.shape;
     const id = shape.dataset.id;
-    if (!level()[kind]?.some((item) => item.id === id)) return null;
+    if (!elementRecord(level(), kind, id)) return null;
     return { kind, id };
   }
   function dimensionsAround(wall) {
@@ -1943,11 +2070,6 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const hit = tool === 'select' && !spacePan && event.button === 0 ? selectEntity(event.target) : null;
     if (studioPanel.contains(document.activeElement) && document.activeElement?.matches('input, textarea')) document.activeElement.blur();
     plane.focus({ preventScroll: true });
-    if (!hit && tool === 'select' && !spacePan && event.button === 0 && event.target.closest?.('[data-slab-outline]')) {
-      preventClick = true;
-      setTool('slab');
-      return;
-    }
     const world = position(event, true);
     if (tool === 'pan' || spacePan || event.button === 1) {
       preventClick = true;
@@ -1964,6 +2086,12 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       } else drag = { type: 'service-placement', hit: picked, screen: point(event.clientX, event.clientY), moved: false };
     } else if (tool === 'select') {
       const wasSelected = selected;
+      if (hit && (['roof', 'structure', 'slab', 'ceiling'].includes(hit.kind) ||
+        event.pointerType === 'touch' && !event.target.closest?.('[data-plan-handle]') &&
+        (wasSelected?.id !== hit.id || wasSelected.kind !== hit.kind))) {
+        drag = { ...panFrom(event), inspect: hit };
+        return;
+      }
       selected = hit;
       fitSelected.disabled = !selected;
       const item = entity();
@@ -1971,7 +2099,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (item) {
         inspectorTab = 'properties';
         if (event.pointerType !== 'touch' || handle || wasSelected?.id === selected.id) {
-          drag = { type: 'shape', ...selected, handle, pointerId: event.pointerId, start: world, screen: point(event.clientX, event.clientY), original: item, preview: item, moved: false };
+          drag = { type: 'shape', ...selected, inspect: hit, handle, pointerId: event.pointerId, start: world, screen: point(event.clientX, event.clientY), original: item, preview: item, moved: false };
           if (handle === 'rotate') plane.dataset.rotating = 'true';
         }
       } else drag = panFrom(event);
@@ -2066,6 +2194,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (rotating && !cancelled) previewRotation(event);
     const serviceDrag = drag?.type === 'service-node';
     const servicePlacement = drag?.type === 'service-placement' ? drag : null;
+    const inspection = drag?.inspect;
     if (serviceDrag && !cancelled) previewServiceNode(event);
     const moved = drag?.moved;
     const drawing = drag?.type === 'draw';
@@ -2089,7 +2218,8 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       if (rotating || serviceDrag) modelPaint();
     }
     if (!cancelled && (!moved || drawing) && !preventClick && event.button === 0) {
-      if (servicePlacement) servicesEditor.click(position(event), planPosition(event), servicePlacement.hit, serviceTolerance(event.pointerType));
+      if (inspection && !rotating) inspectElement(inspection.kind, inspection.id);
+      else if (servicePlacement) servicesEditor.click(position(event), planPosition(event), servicePlacement.hit, serviceTolerance(event.pointerType));
       else drawAction(event);
     }
   }
@@ -2194,7 +2324,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }
   function exportPng() {
     if (viewMode !== 'plan') {
-      const scene = compileScene(modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, simulator, services: servicesEditor.layers }));
+      const scene = compileScene(modelFaces(project, project.levelId, cutaway, { scope: modelScope, roof: showRoof, ceiling: showRoof || selected?.kind === 'ceiling', simulator, services: servicesEditor.layers }));
       if (scene.empty) { toast('exportError'); return; }
       modelImage(scene, viewer.camera()).toBlob((blob) => blob ? download(blob, 'png', 'image/png') : toast('exportError'));
       return;
@@ -2284,13 +2414,10 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       case 'find-entity': {
         const { floor, kind, id } = button.dataset;
         const target = viewLevel(project, floor);
-        if (!target?.[kind]?.some((entry) => entry.id === id)) break;
-        if (viewMode === 'view3d') viewMode = 'split';
-        switchLevel(floor);
-        selected = { kind, id };
-        inspectorOpen = true;
-        setActiveShape();
-        fitSelection();
+        if (!target || !elementRecord(target, kind, id)) break;
+        dialog.close();
+        if (kind === 'roof' || kind === 'structure' && elementRecord(target, kind, id).type !== 'foundation') revealCovering();
+        if (inspectElement(kind, id, floor) && viewMode !== 'view3d') fitSelection();
         break;
       }
       case 'toggle-tools': toolbarOpen = !toolbarOpen; updateTools(); break;
@@ -2308,6 +2435,15 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         break;
       case 'finish-drawing': finishDrawing(); break;
       case 'draw-slab': beginSlabDrawing(); break;
+      case 'structure-add': addStructure(arg); break;
+      case 'structure-select':
+        if (arg === 'roof' || arg === 'structure' && elementRecord(level(), arg, button.dataset.id)?.type !== 'foundation') revealCovering();
+        if (inspectElement(arg, button.dataset.id ?? project.levelId)) {
+          studioPanel.querySelector('.cv-panel-section h2')?.focus({ preventScroll: true });
+        }
+        break;
+      case 'structure-remove': removeStructure(); break;
+      case 'structure-reset-color': changeStructure('color'); break;
       case 'catalog': setCatalogOpen(!catalogOpen, true); break;
       case 'services': {
         if (inspectorOpen && !catalogOpen && inspectorTab === 'services') inspectorOpen = false;
@@ -2445,12 +2581,12 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
         });
         break;
       case 'ceiling':
-        cutaway = false;
-        showRoof = true;
-        if (viewMode === 'plan') viewMode = 'split';
-        change(() => { level().ceiling = !level().ceiling; });
+        inspectElement('ceiling', project.levelId);
         break;
-      case 'roof': openModal('roofs'); break;
+      case 'roof':
+        if (level().roof && level().roof !== 'none') revealCovering();
+        inspectElement('roof', project.levelId);
+        break;
       case 'flooring': openModal('flooring'); break;
       case 'preset':
         if (viewMode === 'plan') viewMode = 'view3d';
@@ -2487,6 +2623,91 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   function wallDetail(wall) {
     return renderWallInspector(wall, level(), { locale, systemId: project.systemId, findWall });
   }
+  function revealCovering() {
+    cutaway = false;
+    showRoof = true;
+    if (viewMode !== 'plan' && modelScope !== 'all') modelScope = 'through';
+  }
+  function addStructure(type) {
+    const floor = level();
+    const current = floor.structure ?? [];
+    if (current.length >= structureLimits.count) { toast('structureLimit'); return; }
+    const draft = { id: uid(), type };
+    if (type === 'foundation') {
+      if (selected?.kind !== 'walls') return;
+      draft.wallId = selected.id;
+      const existing = current.find((item) => item.type === type && item.wallId === draft.wallId);
+      if (existing) { inspectElement('structure', existing.id); return; }
+    } else {
+      const frame = roofFrame(floor);
+      if (!frame) return;
+      if (type === 'gutter') {
+        draft.edge = gutterEdges.find((edge) => !current.some((item) => item.type === type && item.edge === edge));
+        if (!draft.edge) { toast('gutterEdgesUsed'); return; }
+      } else {
+        const boxes = current.filter(({ type }) => ['roofWindow', 'chimney'].includes(type)).map((part) => planBox(structureFootprint(floor, part, frame)));
+        const positions = [.35, .65, .19, .81, .5].flatMap((u) => [.25, .75, .43, .57].map((v) => ({ u, v })));
+        const position = positions.find((offset) => {
+          const candidate = normalizeStructureElement({ ...draft, ...offset }, floor);
+          const box = candidate && planBox(structureFootprint(floor, candidate, frame));
+          return box && !boxes.some((other) => other && box.x < other.x + other.width + .06 && box.x + box.width + .06 > other.x &&
+            box.y < other.y + other.depth + .06 && box.y + box.depth + .06 > other.y);
+        });
+        if (!position) { toast('noRoofSpace'); return; }
+        Object.assign(draft, position);
+      }
+      revealCovering();
+    }
+    const part = normalizeStructureElement(draft, floor);
+    if (!part) return;
+    change(() => { (floor.structure ??= []).push(part); }, false);
+    inspectElement('structure', part.id);
+    studioPanel.querySelector('.cv-structure-heading h2')?.focus({ preventScroll: true });
+  }
+  function removeStructure() {
+    const floor = level();
+    if (selected?.kind === 'roof' && floor.roof === 'none') return false;
+    if (!['roof', 'structure'].includes(selected?.kind) || !entity()) return false;
+    change(() => {
+      if (selected.kind === 'roof') {
+        floor.roof = 'none';
+        if (floor.structure) floor.structure = floor.structure.filter((part) => part.type === 'foundation');
+      } else {
+        floor.structure = floor.structure.filter(({ id }) => id !== selected.id);
+      }
+      selected = null;
+    });
+    return true;
+  }
+  function changeStructure(key, input) {
+    const floor = level();
+    const item = entity();
+    if (!item || !['roof', 'structure'].includes(selected.kind)) return;
+    const value = input?.type === 'number' ? input.valueAsNumber / Number(input.dataset.structureScale ?? 1)
+      : input?.type === 'checkbox' ? input.checked : input?.value;
+    const valid = input?.type !== 'number' || input.validity.valid && Number.isFinite(value);
+    if (valid && selected.kind === 'roof') {
+      if (key === 'type' && roofTypes.includes(value)) {
+        if (value !== 'none') revealCovering();
+        if (value !== floor.roof) change(() => { floor.roof = value; }, false);
+      } else if (key === 'pitch' && floor.pitch !== value) {
+        change(() => { floor.pitch = clamp(value, 5, 65); }, false);
+      } else if (Object.hasOwn(roofSpecFor(floor), key) || key === 'color') {
+        const previous = roofSpecFor(floor);
+        const next = normalizeRoofSpec({ ...previous, [key]: value });
+        if (next[key] !== previous[key]) change(() => { floor.roofSpec = next; }, false);
+      }
+    } else if (valid && (Object.hasOwn(item, key) || key === 'color') && !['id', 'type', 'wallId'].includes(key)) {
+      const next = normalizeStructureElement({ ...item, [key]: value }, floor);
+      if (next && JSON.stringify(next) !== JSON.stringify(item)) {
+        change(() => { floor.structure = floor.structure.map((part) => part === item ? next : part); }, false);
+      }
+    }
+    if (!syncStructureInspector(studioPanel, renderStructureInspector(selected.kind, entity(), floor, { locale, icon }))) renderInspector(true);
+    updateMode();
+    updateTools();
+    paint();
+  }
   function updateWallDetails(wall) {
     syncWallInspector(studioPanel, wallDetail(wall));
     updateTools();
@@ -2519,14 +2740,36 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     const item = entity();
     if (!item) return;
     const number = input.type === 'number' ? input.valueAsNumber : Number.NaN;
-    if (selected.kind === 'items' && elements[item.type].opening && ['openingHeight', 'openingSill'].includes(key)) {
-      const opening = normalizeOpening(item.opening ?? {}, item.type);
-      const field = key === 'openingHeight' ? 'height' : 'sill';
-      if (Number.isFinite(number)) {
-        const edited = normalizeOpening({ ...opening, [field]: number }, item.type);
-        if (opening[field] !== edited[field]) change(() => { item.opening = edited; });
+    const isOpening = selected.kind === 'items' && elements[item.type].opening;
+    const updateOpening = (edit) => {
+      const focuses = document.activeElement === input;
+      change(edit, false);
+      renderInspector(true);
+      if (focuses) studioPanel.querySelector(`[data-field="shape:${key}"]`)?.focus({ preventScroll: true });
+      updateTools();
+      paint();
+    };
+    if (isOpening && key.startsWith('opening')) {
+      const field = { openingHeight: 'height', openingSill: 'sill', openingLeaves: 'leaves',
+        openingHanding: 'handing', openingFrameColor: 'frameColor' }[key];
+      if (key === 'openingOffset') {
+        const host = findWall(item, level().walls, .15, item.width);
+        if (!host) return;
+        const { wall } = host;
+        const length = wallLength(wall);
+        const offset = Number.isFinite(number) ? clamp(number, item.width / 2, length - item.width / 2) : host.ratio * length;
+        const ratio = offset / length;
+        if (Math.abs(ratio - host.ratio) > .00005) {
+          updateOpening(() => { item.x = wall.x1 + (wall.x2 - wall.x1) * ratio; item.y = wall.y1 + (wall.y2 - wall.y1) * ratio; });
+        } else input.value = Number(offset.toFixed(3));
+        return;
       }
-      input.value = normalizeOpening(item.opening ?? {}, item.type)[field];
+      if (!field) return;
+      const opening = normalizeOpening(item.opening ?? {}, item.type);
+      const value = input.type === 'number' ? number : field === 'leaves' ? Number(input.value) : input.value;
+      const next = normalizeOpening({ ...opening, [field]: value }, item.type);
+      if (opening[field] !== next[field]) updateOpening(() => { item.opening = next; });
+      else if (input.type === 'number') input.value = opening[field];
       return;
     }
     if (input.type === 'number' && !Number.isFinite(number)) {
@@ -2546,15 +2789,17 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       updateWallDetails(item);
       return;
     }
-    if (selected.kind === 'items' && elements[item.type].opening && key === 'width') {
+    if (isOpening && key === 'width') {
       const attached = findWall(item, level().walls, .15, item.width);
       if (attached) {
         const width = Math.min(value, wallLength(attached.wall));
         const checked = findWall(item, [attached.wall], Infinity, width);
-        if (width !== item.width) change(() => { Object.assign(item, { width, x: checked.x, y: checked.y }); });
+        if (width !== item.width) updateOpening(() => { Object.assign(item, { width, x: checked.x, y: checked.y }); });
         input.value = Number(width.toFixed(3));
         return;
       }
+      if (value !== item.width) updateOpening(() => { item.width = value; });
+      return;
     }
     if (item[key] === value) return;
     change(() => {
@@ -2637,6 +2882,7 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
     if (key === 'shape') { shapeChange(property, input); return; }
     if (key === 'wall') { wallSpecChange(property, input); return; }
     if (key === 'slab') { changeSlab(property, input); return; }
+    if (key === 'structure') { changeStructure(property, input); return; }
     if (key === 'settings' && Object.hasOwn(settings, property)) {
       if (property === 'drawingStyle' && ['technical', 'furnished'].includes(input.value)) settings.drawingStyle = input.value;
       else if (input.type === 'checkbox') settings[property] = input.checked;
@@ -2645,6 +2891,9 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       return;
     }
     switch (key) {
+      case 'ceilingEnabled':
+        if (level().ceiling !== input.checked) change(() => { level().ceiling = input.checked; });
+        break;
       case 'modelScope':
         modelScope = input.value;
         viewer.fit();
@@ -2776,13 +3025,6 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
       });
       dialog.close();
     }
-    if (kind === 'roof') {
-      const roof = data.get('type');
-      if (roof !== 'none') { cutaway = false; showRoof = true; }
-      if (viewMode === 'plan') viewMode = 'split';
-      change(() => { level().roof = roof; level().pitch = clamp(Number(data.get('pitch')), 5, 65); });
-      dialog.close();
-    }
     if (kind === 'finish') {
       activeFinish = data.get('finish');
       const item = entity();
@@ -2808,9 +3050,12 @@ export async function renderBuilder(root, { locale, homeUrl = '/', appUrl = '/ap
   }, listen);
 
   root.addEventListener('keydown', (event) => {
-    if (event.key === 'Enter' && event.target.matches?.('input[type="number"][data-field^="slab:"]')) {
+    if (event.key === 'Enter' && event.target.matches?.('input[type="number"]:is([data-field^="slab:"], [data-field^="structure:"], [data-field^="shape:"])')) {
       event.preventDefault();
-      changeSlab(event.target.dataset.field.split(':')[1], event.target);
+      const [kind, field] = event.target.dataset.field.split(':');
+      if (kind === 'slab') changeSlab(field, event.target);
+      else if (kind === 'structure') changeStructure(field, event.target);
+      else shapeChange(field, event.target);
       return;
     }
     if (event.key !== 'Escape' || !catalogOpen || drag?.handle === 'rotate' || root.querySelector('dialog[open]')) return;

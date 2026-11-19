@@ -3,6 +3,7 @@ import { elements } from './builder-engine.js';
 import { bilingual as label } from './systems/plugin.js';
 import { translation } from './locales.js';
 import { illustrativeWallSpec } from './wall-spec.js';
+import { normalizeStructure } from './structure-elements.js';
 
 const floorName = [
   label('Rés do chão', 'Ground floor'),
@@ -134,7 +135,22 @@ function furnish({ type, x, y, w, h, name }) {
 function template(id, name, description, systemId, outlines) {
   const levels = outlines.map((outline, i) => makeLevel(outline, i, systemById(systemId).defaults, systemId, outlines.length > 1));
   const [roof, pitch] = modelRoofs[id];
-  Object.assign(levels.at(-1), { roof, pitch });
+  const top = levels.at(-1);
+  Object.assign(top, { roof, pitch });
+  if (id === 'pinhal') {
+    const rimWalls = top.walls.filter(({ y1, y2, x1, x2 }) => (y1 === 9 && y2 === 9) || (x1 === 12 && x2 === 12));
+    top.roofSpec = { covering: 'metal' };
+    top.structure = normalizeStructure([
+      { id: 'janela-telhado-1', type: 'roofWindow', u: .27, v: .25 },
+      { id: 'janela-telhado-2', type: 'roofWindow', u: .62, v: .28 },
+      { id: 'janela-telhado-3', type: 'roofWindow', u: .42, v: .75 },
+      { id: 'chamine-1', type: 'chimney', u: .7, v: .47, width: .46, height: .82 },
+      { id: 'ventilacao-1', type: 'chimney', u: .42, v: .4, shape: 'round', width: .23, kind: 'vent' },
+      { id: 'caleira-1', type: 'gutter', edge: 'front' },
+      { id: 'caleira-2', type: 'gutter', edge: 'back' },
+      ...rimWalls.map(({ id: wallId }, i) => ({ id: `fundacao-${i + 1}`, type: 'foundation', wallId, wallThickness: .48, top: .03 })),
+    ], top);
+  }
   const area = levels.reduce((total, floor) => total + floor.rooms.reduce((sum, room) => sum + room.w * room.h, 0), 0);
   return { id, name, description, systemId, levels, area };
 }

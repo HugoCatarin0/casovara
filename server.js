@@ -9,6 +9,7 @@ import { systemById } from './public/core.js';
 import { normalizeBuildingServices } from './public/building-services.js';
 import { normalizeConstructionSchedule } from './public/construction-schedule.js';
 import { normalizeSlab } from './public/slab.js';
+import { normalizeRoofSpec, normalizeStructure } from './public/structure-elements.js';
 import { createDesignAssistant } from './design-assistant.js';
 import { handleMcp } from './mcp-app.js';
 import { createCatalogService } from './catalog-service.js';
@@ -139,6 +140,8 @@ function validateProject(project) {
     ...level,
     ...(Object.hasOwn(level, 'services') ? { services: normalizeBuildingServices(level.services, level) } : {}),
     ...(Object.hasOwn(level, 'slab') ? { slab: normalizeSlab(level.slab) } : {}),
+    ...(Object.hasOwn(level, 'roofSpec') ? { roofSpec: normalizeRoofSpec(level.roofSpec) } : {}),
+    ...(Object.hasOwn(level, 'structure') ? { structure: normalizeStructure(level.structure, level) } : {}),
   }));
   return { ...project, name: project.name.trim(), levels, ...(constructionPlan ? { constructionPlan } : {}) };
 }

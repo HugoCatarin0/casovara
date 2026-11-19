@@ -116,3 +116,6 @@
   .cv-plan-options input, .cv-plan-options select { min-height: 2rem; }
   .cv-plan-options .cv-plan-snap { min-height: 2rem; }
 }
+.cv-plan-structure { --cv-structure-stroke: #456a81; --cv-structure-fill: #c0dce8b5; }
+.cv-plan-structure[data-highlight="true"] { --cv-structure-stroke: #a64530; --cv-structure-fill: #e3a687ca; }
+.cv-studio[data-tool="select"] :is(.cv-plan-structure, [data-shape="roof"], [data-shape="slab"], [data-shape="ceiling"]) { cursor: pointer; }

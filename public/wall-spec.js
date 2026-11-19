@@ -114,7 +114,12 @@ export function normalizeOpening(raw, type) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw) || !openingTypes.includes(type)) return undefined;
   const sill = metres(raw.sill, type === 'window' ? .9 : 0, -.5, 4);
   const defaultHeight = type === 'window' ? 1.25 : type === 'slidingWindow' ? 2.15 : 2.05;
-  return { sill, height: metres(raw.height, defaultHeight, .1, 5) };
+  return {
+    sill, height: metres(raw.height, defaultHeight, .1, 5),
+    ...((type === 'window' || type === 'slidingWindow') && [1, 2, 3].includes(raw.leaves) ? { leaves: raw.leaves } : {}),
+    ...((type === 'door' || type === 'window') && ['left', 'right'].includes(raw.handing) ? { handing: raw.handing } : {}),
+    ...(typeof raw.frameColor === 'string' && /^#[a-f\d]{6}$/i.test(raw.frameColor) ? { frameColor: raw.frameColor.toLowerCase() } : {}),
+  };
 }
 
 export function openingVertical(item) {

@@ -9,13 +9,16 @@ import { generateConstructionPlan } from './construction-tasks.js';
 import { normalizeSlab, slabFor, slabLimits, slabModes } from './slab.js';
 import { serviceRouteSurfaces } from './service-routing.js';
 import {
+  gutterEdges, normalizeRoofSpec, normalizeStructure, normalizeStructureElement, roofCoverings, roofSpecFor, roofTypes,
+  structureLimits, structureTypes,
+} from './structure-elements.js';
+import {
   applyWallAssembly, effectiveWallHeight, getWallSpec, illustrativeWallSpec, normalizeOpening,
   normalizeWallSpec, openingTypes, openingVertical, wallAssemblies, wallBaseOffset,
   wallFinishes, wallSpecThickness,
 } from './wall-spec.js';
 
 const tolerance = .001;
-const roofTypes = ['none', 'flat', 'gable', 'hipped'];
 const finishes = ['natural', 'wood', 'ceramic', 'concrete', 'stone'];
 const furnitureTypes = Object.keys(elements).filter((type) => !openingTypes.includes(type));
 
@@ -36,7 +39,28 @@ const angle = decimal(-360, 360, 'Rotation in degrees.');
 const span = decimal(.35, 100, 'Room dimension in metres.');
 const clearHeight = decimal(1.5, 12, 'Floor clear height in metres.');
 const thickness = decimal(.05, 1.5, 'Total wall thickness in metres.');
-const roof = object({ type: choice(roofTypes), pitch: decimal(5, 65, 'Roof slope in degrees.') }, ['type']);
+const materialColor = nullable({ type: 'string', pattern: '^#[A-Fa-f0-9]{6}$', description: 'Custom #RRGGBB colour or null to restore the material colour.' });
+const roofProperties = {
+  type: choice(roofTypes), pitch: decimal(5, 65, 'Roof slope in degrees.'),
+  eavesOverhang: decimal(...structureLimits.overhang, 'Eaves overhang in metres.'),
+  gableOverhang: decimal(...structureLimits.overhang, 'Gable overhang in metres.'),
+  offset: decimal(...structureLimits.offset, 'Roof seat height relative to the storey top in metres.'),
+  covering: choice(roofCoverings), color: materialColor,
+};
+const roof = object(roofProperties, ['type']);
+const proportion = decimal(0, 1, 'Proportion between the ends of the roof axis.');
+const structure = {
+  type: choice(structureTypes), u: proportion, v: proportion,
+  width: decimal(.08, 3, 'Width or round chimney diameter in metres.'),
+  height: decimal(.15, 3, 'Chimney height above the selected reference or window height measured on the slope in metres.'),
+  color: materialColor, kind: choice(['chimney', 'vent']), shape: choice(['square', 'round']), reference: choice(['surface', 'ridge']),
+  edge: choice(gutterEdges), from: proportion, to: proportion, downspout: flag,
+  depth: decimal(...structureLimits.gutter.depth, 'Gutter depth in metres.'),
+  wallId: id, footingHeight: decimal(...structureLimits.foundation.footingHeight, 'Footing thickness in metres.'),
+  bottom: decimal(...structureLimits.foundation.bottom, 'Footing underside relative to the storey datum in metres.'),
+  wallThickness: decimal(...structureLimits.foundation.wallThickness, 'Foundation wall thickness in metres.'),
+  top: decimal(...structureLimits.foundation.top, 'Foundation wall top relative to the storey datum in metres.'),
+};
 const room = { name: label, type: choice(Object.keys(roomStyles)), ...axis, width: span, depth: span, finish: choice(finishes) };
 const furniture = {
   type: choice(furnitureTypes), ...axis, width: decimal(.1, 20, 'Object width in metres.'),
@@ -49,6 +73,9 @@ const opening = {
   width: decimal(.1, 20, 'Opening width in metres.'),
   height: decimal(.1, 5, 'Opening height in metres.'),
   sill: decimal(-.5, 4, 'Opening base above its storey datum in metres.'),
+  leaves: nullable(integer(1, 3, 'Number of window leaves.')),
+  handing: nullable(choice(['left', 'right'])),
+  frameColor: materialColor,
 };
 const wall = {
   x1: position, y1: position, x2: position, y2: position, thickness,
@@ -76,6 +103,7 @@ const level = object({
   id, ...levelProperties,
   rooms: list(object({ id, ...room }, ['type', 'x', 'y', 'width', 'depth']), 0, 60), roof,
   furniture: list(object({ id, ...furniture }, ['type', 'x', 'y']), 0, 120),
+  structure: list(object({ id, ...structure }, ['type']), 0, structureLimits.count),
   autoOpenings: { type: 'boolean', description: 'Generate attached doors and windows automatically. Defaults to true.' },
 }, ['name', 'rooms']);
 const system = choice(systems.map(({ id }) => id));
@@ -101,7 +129,10 @@ const operations = [
   operation('update_opening', { levelId: id, id, opening: object(opening) }, ['id', 'opening']),
   operation('add_furniture', { levelId: id, furniture: object({ id, ...furniture }, ['type', 'x', 'y']) }, ['furniture']),
   operation('update_furniture', { levelId: id, id, furniture: object(furniture) }, ['id', 'furniture']),
-  operation('set_roof', { levelId: id, roof }, ['roof']),
+  operation('set_roof', { levelId: id, roof: object(roofProperties) }, ['roof']),
+  operation('add_structure', { levelId: id, element: object({ id, ...structure }, ['type']) }, ['element']),
+  operation('update_structure', { levelId: id, id, element: object(structure) }, ['id', 'element']),
+  operation('delete_structure', { levelId: id, id }, ['id']),
   operation('move', { levelId: id, id, dx: position, dy: position }, ['id', 'dx', 'dy']),
   operation('delete', { levelId: id, id }, ['id']),
 ];
@@ -182,7 +213,7 @@ export const designTools = Object.freeze([
   },
   {
     name: 'casovara_edit_plan', title: 'Edit a house plan',
-    description: 'Apply an atomic batch of edits to a Casovara project. Supports rooms, walls, anchored openings, furniture, roof, storeys, slabs and project settings. Inspect first for exact entity ids. Provide the full project to external tools. Returns an editable draft without saving to the workspace.',
+    description: 'Apply an atomic batch of edits to a Casovara project. Supports rooms, walls, openings, furniture, roof parameters, skylights, chimneys, gutters, strip foundations, storeys and slabs. Inspect first for exact entity ids. Returns an editable draft without saving to the workspace.',
     inputSchema: object({ project: projectInput, operations: list({ oneOf: operations }, 1, 80) }, ['operations']),
   },
   {
@@ -212,6 +243,7 @@ Use Casovara to draw editable house plans. Work in metres with x and y as plan a
 - Use \`casovara_inspect_plan\` before editing. It returns stable level, room, wall and item ids and practical layout warnings. Check hall access, vertical circulation, and dimensions. Its area is the union of room rectangles excluding outdoors. Material costs are illustrative.
 - Use \`casovara_edit_plan\` for atomic changes. Each operation can target a \`levelId\`; omit it to use the active storey. Use exact ids and supply opening \`wallId\` plus an \`offset\` in metres from that wall's first endpoint to the opening centre. A door or window must fit within its wall in both dimensions. If walls were created independently of a room, include explicit wall edits when moving a room boundary. Evaluate the warnings after every edit.
 - Set a storey's structural slab with \`slab\` on creation, addition or a \`set_level\` edit. The default \`auto\` slab follows the indoor rooms. Use \`custom\` with a rectangular \`footprint\` (x, y, width and depth in metres) or use \`none\` to disable it. Edit \`thickness\` in metres independently of the ceiling and floor finish. Keep the current mode and footprint when changing thickness alone. The default thickness is for visual planning.
+- Use \`set_roof\` for shape, pitch, overhangs, seat offset, covering and colour. Use \`add_structure\`, \`update_structure\` and \`delete_structure\` for roof windows, chimneys, vent stacks, gutters and strip foundations. Roof coordinates u/v are fractions along/across the ridge. Gutters follow a named edge and use from/to fractions. Foundations attach to a wall by wallId. Dimensions are in metres.
 - Use \`casovara_design_services\` to generate or adjust building services. The supported systems are ${serviceIds.map((id) => `\`${id}\``).join(', ')}. Specify radiant floor only if the user asks for it or confirms it for relevant rooms. A schematic generation preserves existing work unless the user requests replacement. Use an \`edit\` operation with the exact system and storey ids and a batch of node or run changes. Each run joins two nodes in the same system and takes optional intermediate points, omitting its endpoints. A storey schematic leaves connections between storeys for coordination. These tools do not determine loads, sizes, slopes, equipment ratings or regulatory compliance.
 - Use \`run.surface\` to override the horizontal route support to \`floor\` or \`ceiling\`. The automatic surface follows the network. Lighting, controls, VMC ducts and refrigerant routes default to ceiling. Power, plumbing, condensate and radiant-floor circuits default to floor. Pass \`null\` to restore the default and omit the field to preserve any override. Wall-mounted fixtures get vertical segments along their host wall. Review \`unsupported_surface\` warnings and move waypoints to keep the route within its supporting footprint.
 - For radiant floor, choose \`radiantPattern: "spiral"\` for an interleaved counterflow layout or \`"serpentine"\` for a meander. Each circuit starts and returns at a dedicated port pair on the storey's manifold cabinet. Set \`manifoldWall: {wallId, fraction, side}\` and a single \`levelIds\` entry to choose its wall. Automatic generation can retain a suitable existing cabinet when replacing the scheme. Use the default geometry for coordination only.
@@ -291,6 +323,24 @@ function updateSlab(patch, floor) {
   const footprint = patch.footprint ? { ...previous.footprint, ...patch.footprint } : previous.footprint;
   if (footprint || mode === 'custom') validate(object(slabFootprint, Object.keys(slabFootprint)), footprint, 'slab.footprint');
   return normalizeSlab({ ...previous, ...patch, mode, footprint });
+}
+
+function setRoof(floor, { type, pitch, ...appearance }) {
+  floor.roof = type ?? floor.roof ?? 'none';
+  floor.pitch = pitch ?? floor.pitch ?? 30;
+  if (Object.keys(appearance).length) floor.roofSpec = normalizeRoofSpec({ ...roofSpecFor(floor), ...appearance });
+}
+
+function makeStructure(data, floor, used, previous) {
+  if (previous && data.type && previous.type !== data.type) throw new Error('Delete and add an element to change its structure type.');
+  const element = { ...previous, ...data, id: previous?.id ?? reserveId(used, data.id, 'structure') };
+  for (const [key, limits] of Object.entries(structureLimits[element.type])) {
+    if (Object.hasOwn(data, key)) validate(decimal(...limits), data[key], `element.${key}`);
+  }
+  const result = normalizeStructureElement(element, floor);
+  if (!result) throw new Error('A strip foundation requires a wall ID on this storey.');
+  if (!previous && element.type !== 'foundation' && (floor.roof ?? 'none') === 'none') throw new Error('Add a roof on this storey before adding roof accessories.');
+  return result;
 }
 
 function reserveId(used, supplied, prefix) {
@@ -414,8 +464,9 @@ function makeOpening(data, wall, floor, used, previous) {
   const type = data.type ?? previous?.type;
   const profile = elements[type];
   const baseline = previous && type === previous.type ? previous.opening : undefined;
-  const opening = normalizeOpening({ ...baseline, ...(data.sill === undefined ? {} : { sill: data.sill }),
-    ...(data.height === undefined ? {} : { height: data.height }) }, type);
+  const properties = Object.fromEntries(['sill', 'height', 'leaves', 'handing', 'frameColor']
+    .filter((key) => data[key] !== undefined).map((key) => [key, data[key]]));
+  const opening = normalizeOpening({ ...baseline, ...properties }, type);
   const item = {
     id: previous?.id ?? reserveId(used, data.id, 'opening'), type,
     width: rounded(data.width ?? (type === previous?.type ? previous.width : profile.width)),
@@ -480,6 +531,7 @@ function makeFloor(data, systemId, used, index, isTop) {
     measurements: [], annotations: [], ceiling: data.ceiling ?? false,
     roof: data.roof?.type ?? (isTop ? 'flat' : 'none'), pitch: data.roof?.pitch ?? 30,
   };
+  if (data.roof) setRoof(result, data.roof);
   if (data.slab) result.slab = updateSlab(data.slab, result);
   for (const entry of data.rooms) {
     const room = makeRoom(entry, used);
@@ -491,6 +543,7 @@ function makeFloor(data, systemId, used, index, isTop) {
   result.walls = edges.map(({ owners, wall }) => shared.has(owners[0].room.id) ? wall : { ...wall, roomId: owners[0].room.id });
   if (data.autoOpenings !== false) autoOpenings(result, edges, index === 0, used);
   result.items.push(...(data.furniture ?? []).map((entry) => makeFurniture(entry, used)));
+  if (data.structure?.length) result.structure = data.structure.map((entry) => makeStructure(entry, result, used));
   return result;
 }
 
@@ -532,6 +585,10 @@ function validateSnapshot(snapshot) {
       if (!validNumbers(item, ['x', 'y', 'width', 'depth', 'angle']) || !Object.hasOwn(elements, item.type) ||
           item.width < .1 || item.depth < .05 || item.width > 20 || item.depth > 20) fail('item');
       seen(item.id);
+    }
+    if (floor.structure !== undefined) {
+      if (!Array.isArray(floor.structure) || normalizeStructure(floor.structure, floor).length !== floor.structure.length) fail('structure element');
+      for (const element of floor.structure) seen(element.id);
     }
   }
   if (!snapshot.levels.some(({ id }) => id === snapshot.levelId)) fail('current storey id');
@@ -664,6 +721,7 @@ function updateRoom(floor, previous, data, systemId, used) {
 function removeWall(floor, wall) {
   floor.items = floor.items.filter((item) => !openingTypes.includes(item.type) || hostOf(item, floor)?.id !== wall.id);
   floor.walls = floor.walls.filter(({ id }) => id !== wall.id);
+  if (floor.structure) floor.structure = floor.structure.filter((element) => element.wallId !== wall.id);
 }
 
 function targetEntity(floor, id) {
@@ -711,8 +769,23 @@ function applyEdit(project, edit, used) {
       if (Array.isArray(project.cameras)) project.cameras = project.cameras.filter(({ levelId }) => levelId !== floor.id);
       break;
     case 'set_roof':
-      floor.roof = edit.roof.type;
-      floor.pitch = edit.roof.pitch ?? floor.pitch ?? 30;
+      setRoof(floor, edit.roof);
+      break;
+    case 'add_structure': {
+      const entries = floor.structure ??= [];
+      if (entries.length >= structureLimits.count) throw new Error('The selected storey exceeds the structure element limit.');
+      entries.push(makeStructure(edit.element, floor, used));
+      break;
+    }
+    case 'update_structure': {
+      const entries = floor.structure ??= [];
+      const previous = matchingEntity(entries, id, 'structure element');
+      replace(entries, previous, makeStructure(edit.element, floor, used, previous));
+      break;
+    }
+    case 'delete_structure':
+      matchingEntity(floor.structure ?? [], id, 'structure element');
+      floor.structure = floor.structure.filter((element) => element.id !== id);
       break;
     case 'add_room': {
       const room = makeRoom(edit.room, used);
@@ -893,6 +966,8 @@ function analyse(project, locale) {
     return {
       id: floor.id, name: floor.name, area: rounded(projectArea({ levels: [floor] }), 100),
       height: floor.height, roof: floor.roof ?? 'none', pitch: floor.pitch ?? 30, slab: slabFor(floor),
+      ...(floor.roof && floor.roof !== 'none' ? { roofSpec: roofSpecFor(floor) } : {}),
+      ...(floor.structure?.length ? { structure: normalizeStructure(floor.structure, floor) } : {}),
       ...(Object.keys(serviceAnalysis).length ? { services: serviceAnalysis } : {}),
       rooms: floor.rooms.map(({ id, type, name, x, y, w, h, finish }) => ({
         id, type, name: name || roomStyles[type][pt ? 'pt' : 'en'], x, y, width: w, depth: h, finish: finish ?? 'natural',
@@ -912,7 +987,9 @@ function analyse(project, locale) {
           };
         }
         const { sill, top } = openingVertical({ type, opening });
-        return { ...geometry, height: rounded(top - sill), sill, wallId: host?.id ?? null, offset: host ? rounded(openingOffset({ x, y }, host)) : null };
+        return { ...geometry, height: rounded(top - sill), sill, wallId: host?.id ?? null, offset: host ? rounded(openingOffset({ x, y }, host)) : null,
+          ...Object.fromEntries(['leaves', 'handing', 'frameColor'].filter((key) => opening?.[key] !== undefined).map((key) => [key, opening[key]])),
+        };
       }),
     };
   });
@@ -1010,6 +1087,7 @@ export function runDesignTool(name, args, { project = null, locale = 'pt-PT' } =
   const edited = structuredClone(source);
   for (const floor of edited.levels) {
     if (Object.hasOwn(floor, 'services')) floor.services = normalizeBuildingServices(floor.services, floor);
+    if (Object.hasOwn(floor, 'structure')) floor.structure = normalizeStructure(floor.structure, floor);
   }
   if (name === 'casovara_design_services') {
     const serviceChanges = editServices(edited, args.operations);

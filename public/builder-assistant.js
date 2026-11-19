@@ -4,6 +4,7 @@ import { normalizeBuildingServices, resolveServiceNode, serviceNodeSymbol, servi
 import { normalizeConstructionSchedule, scheduleConstruction } from './construction-schedule.js';
 import { serviceRunSurface } from './service-routing.js';
 import { slabFor, slabFootprints, slabOutline } from './slab.js';
+import { normalizeStructure, roofColors, roofFrame, roofSpecFor, structureFootprint, structureRect } from './structure-elements.js';
 
 const copy = {
   pt: {
@@ -27,6 +28,8 @@ const copy = {
     proposal: 'Rever proposta', before: 'Antes', after: 'Depois', floor: 'Piso a pré-visualizar',
     comparison: 'Comparar a planta atual e a proposta', noFloor: 'Sem piso', noSlab: 'Sem laje', slab: 'Laje', slabs: 'Lajes',
     slabChanges: { added: 'Adicionadas', changed: 'Alteradas', removed: 'Removidas' },
+    roofLayer: 'Cobertura e fundações', roofs: 'Coberturas', structure: 'Elementos construtivos', noRoof: 'Sem cobertura',
+    roofShapes: { flat: 'Plana', gable: 'Duas águas', hipped: 'Quatro águas' },
     area: 'Área interior', units: 'm²', levels: 'Pisos', rooms: 'Divisões', walls: 'Paredes', items: 'Objetos e vãos',
     services: 'Pontos e traçados', layers: 'Camada da proposta', architecture: 'Arquitetura',
     floorRoute: 'Pavimento', ceilingRoute: 'Teto', spiral: 'Espiral bifilar', serpentine: 'Serpentina',
@@ -64,6 +67,8 @@ const copy = {
     you: 'You', assistant: 'Assistant', stopped: 'Request stopped.', ready: 'Your proposal is ready to review.',
     proposal: 'Review proposal', before: 'Before', after: 'After', floor: 'Storey to preview',
     comparison: 'Compare the current plan and proposal', noFloor: 'No storey', noSlab: 'No slab', slab: 'Slab', slabs: 'Slabs',
+    roofLayer: 'Roof and foundations', roofs: 'Roofs', structure: 'Building components', noRoof: 'No roof',
+    roofShapes: { flat: 'Flat', gable: 'Gable', hipped: 'Hipped' },
     area: 'Internal area', units: 'm²', levels: 'Storeys', rooms: 'Rooms', walls: 'Walls', items: 'Objects and openings',
     services: 'Points and routes', layers: 'Proposal layer', architecture: 'Architecture',
     floorRoute: 'Floor', ceilingRoute: 'Ceiling', spiral: 'Counterflow spiral', serpentine: 'Serpentine',
@@ -113,17 +118,20 @@ function compareKey(entity, fields) {
   return JSON.stringify(fields.map((field) => entity[field] ?? null));
 }
 
-function comparePlans(base, next) {
+export function comparePlans(base, next) {
   const fields = {
     rooms: ['type', 'name', 'x', 'y', 'w', 'h', 'finish'],
     walls: ['x1', 'y1', 'x2', 'y2', 'thickness', 'spec'],
     items: ['type', 'x', 'y', 'width', 'depth', 'angle', 'opening'],
   };
-  return [...lists, 'slabs', 'services'].map((kind) => {
+  return [...lists, 'slabs', 'roofs', 'structure', 'services'].map((kind) => {
     const entries = (project) => new Map((project?.levels ?? []).flatMap((level) => {
       if (kind === 'slabs') {
         return slabFootprints(level).length ? [[level.id, JSON.stringify(slabFor(level))]] : [];
       }
+      if (kind === 'roofs') return roofFrame(level)
+        ? [[level.id, JSON.stringify([level.roof, level.pitch ?? 30, roofSpecFor(level)])]] : [];
+      if (kind === 'structure') return normalizeStructure(level.structure, level).map((item) => [item.id, JSON.stringify([level.id, item])]);
       if (kind === 'services') return Object.entries(normalizeBuildingServices(level.services, level)).flatMap(([system, net]) =>
         ['nodes', 'runs'].flatMap((type) => net[type].map((item) => [`${level.id}:${system}:${type}:${item.id}`, JSON.stringify(item)])));
       return level[kind].map((item) => [item.id, JSON.stringify([level.id, compareKey(item, fields[kind])])]);
@@ -156,10 +164,16 @@ function hasPreviewGeometry(level) {
     Object.values(level.services ?? {}).some((network) => network?.nodes?.length) || slabFor(level).mode === 'custom'));
 }
 
-export function comparisonViewport(before, after) {
-  const bounds = [before, after].filter(hasPreviewGeometry).map((level) => levelBounds({
-    ...level, measurements: [], services: normalizeBuildingServices(level.services, level),
-  }));
+export function comparisonViewport(before, after, roofLayer = false) {
+  const bounds = [before, after].filter(hasPreviewGeometry).map((level) => {
+    const frame = roofLayer ? roofFrame(level) : null;
+    const points = roofLayer ? normalizeStructure(level.structure, level).flatMap((part) => structureFootprint(level, part, frame)) : [];
+    if (frame) points.push([frame.x, frame.y], [frame.x + frame.width, frame.y + frame.depth]);
+    return levelBounds({
+      ...level, services: normalizeBuildingServices(level.services, level),
+      measurements: points.map(([x, y]) => ({ x1: x, y1: y, x2: x, y2: y })),
+    });
+  });
   if (!bounds.length) return { width: 10, height: 7, viewBox: '-5 -3.5 10 7' };
   const x = Math.min(...bounds.map((bounds) => bounds.x));
   const y = Math.min(...bounds.map((bounds) => bounds.y));
@@ -220,6 +234,31 @@ function previewPlan(container, level, viewport, copy, differences, proposed, is
       fill: category?.opening ? (item.type.toLowerCase().includes('door') ? '#f2c6ac' : '#a8cfde') : category?.color ?? '#a4b4bf',
       stroke: strokeFor('items', item, '#566c7b'), 'stroke-width': .04,
     });
+  }
+  if (system === 'roof') {
+    const frame = roofFrame(level);
+    const roofParts = svgNode(svg, 'g', { 'data-review-roof': '' });
+    if (frame) {
+      const color = frame.spec.color ?? roofColors[frame.spec.covering];
+      const { length, span, inset, world } = frame;
+      const regions = frame.pitch ? [{ x: 0, y: 0, width: length, depth: span }] : frame.plates;
+      const path = regions.map(({ x, y, width, depth }) => 'M' + structureRect(x, y, width, depth)
+        .map(([u, v]) => world(u, v).slice(0, 2).join(' ')).join('L') + 'Z').join('');
+      svgNode(roofParts, 'path', { d: path, fill: color, 'fill-opacity': .28, stroke: strokeFor('roofs', level, '#435671'), 'stroke-width': .07 });
+      if (frame.pitch) {
+        const first = world(inset, span / 2), last = world(length - inset, span / 2);
+        svgNode(roofParts, 'line', { x1: first[0], y1: first[1], x2: last[0], y2: last[1], 'stroke-width': .06, stroke: '#54687d' });
+      }
+    }
+    for (const part of normalizeStructure(level.structure, level)) {
+      const points = structureFootprint(level, part, frame);
+      if (points.length < 3) continue;
+      const fill = part.type === 'foundation' ? '#9785a6' : part.type === 'roofWindow' ? '#9dc4da' : '#545e70';
+      svgNode(roofParts, 'polygon', { points: points.map((point) => point.join(',')).join(' '), fill, 'fill-opacity': .75,
+        stroke: strokeFor('structure', part, '#435671'), 'stroke-width': .075,
+        ...(part.type === 'foundation' ? { 'stroke-dasharray': '.1 .07' } : {}),
+      });
+    }
   }
   for (const room of level.rooms) {
     const style = roomStyles[room.type];
@@ -511,10 +550,10 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
     const layerPicker = $('layer');
     const language = isPortuguese ? 'pt' : 'en';
     layerPicker.replaceChildren(new Option(t.architecture, '', false, !activeLayer), ...proposal.layers.map((id) =>
-      new Option(id === 'slab' ? t.slab : serviceSystems[id][language], id, false, activeLayer === id)));
+      new Option(id === 'slab' ? t.slab : id === 'roof' ? t.roofLayer : serviceSystems[id][language], id, false, activeLayer === id)));
     layerPicker.hidden = !proposal.layers.length;
     const { before, after } = level;
-    const viewport = comparisonViewport(before, after);
+    const viewport = comparisonViewport(before, after, activeLayer === 'roof');
     previewPlan($('before-preview'), before, viewport, t, proposal.differences, false, isPortuguese, activeLayer);
     previewPlan($('after-preview'), after, viewport, t, proposal.differences, true, isPortuguese, activeLayer);
     $('empty-preview').hidden = hasPreviewGeometry(before) || hasPreviewGeometry(after);
@@ -524,6 +563,10 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       if (!floor) detail.textContent = t.noFloor;
       else if (activeLayer === 'slab') detail.textContent = slabFootprints(floor).length
         ? `${number(slabFor(floor).thickness * 100)} cm` : t.noSlab;
+      else if (activeLayer === 'roof') {
+        const frame = roofFrame(floor);
+        detail.textContent = frame ? [t.roofShapes[floor.roof], frame.pitch ? `${number(frame.pitch)}°` : ''].filter(Boolean).join(' · ') : t.noRoof;
+      }
       detail.hidden = !detail.textContent;
     }
     const mediaUsed = new Map();
@@ -593,9 +636,15 @@ export function mountBuilderAssistant(root, { locale, getProject, applyProject }
       if (!activeLayer && levels.some(({ before, after }) => (before?.slab || after?.slab) &&
         JSON.stringify(slabFor(before)) !== JSON.stringify(slabFor(after)))) activeLayer = 'slab';
     }
+    const differences = comparePlans(base, project);
+    if (levels.some(({ before, after }) => roofFrame(before) || roofFrame(after) || before?.structure?.length || after?.structure?.length)) {
+      layers.unshift('roof');
+      if (!activeLayer && differences.some((row) => ['roofs', 'structure'].includes(row.kind) &&
+        (row.added.length || row.removed.length || row.changed.length))) activeLayer = 'roof';
+    }
     const construction = JSON.stringify(project.constructionPlan) !== JSON.stringify(base?.constructionPlan)
       ? { current: constructionTimeline(base), suggested: constructionTimeline(project) } : null;
-    proposal = { project, base, baseKey: JSON.stringify(base), analysis, differences: comparePlans(base, project), levels, layers, construction, stale: false };
+    proposal = { project, base, baseKey: JSON.stringify(base), analysis, differences, levels, layers, construction, stale: false };
     $('compare').value = '50';
     activeLevelId = project.levelId;
     updateStale();

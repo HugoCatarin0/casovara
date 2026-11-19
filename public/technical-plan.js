@@ -78,7 +78,7 @@ export function openingSymbol(item, thickness, { active, technical }) {
   const top = -depth / 2;
   const window = type === 'window' || type === 'slidingWindow';
   const jamb = active ? draftingInk.accent : technical ? '#2b5164' : '#426257';
-  const frame = window ? technical ? '#215a75' : '#34716e' : technical ? '#385162' : '#946044';
+  const frame = item.opening?.frameColor ?? (window ? technical ? '#215a75' : '#34716e' : technical ? '#385162' : '#946044');
   const paper = technical ? '#f4f8f9' : '#fcf8ec';
   const glass = technical ? '#c9e1eb' : '#c7e1da';
   const cut = `<rect data-opening-cut x="${left}" y="${top}" width="${width}" height="${depth}" fill="${window ? glass : paper}" stroke="none"/>
@@ -86,20 +86,24 @@ export function openingSymbol(item, thickness, { active, technical }) {
   if (window) {
     const offset = Math.min(depth * .30, .071);
     const reveal = Math.abs(top) * .66;
+    const leaves = item.opening?.leaves ?? (type === 'slidingWindow' ? 2 : 1);
+    const mullions = Array.from({ length: leaves - 1 }, (_, index) => `M${left + width * (index + 1) / leaves} ${-offset}V${offset}`).join('');
     return `${cut}<path d="M${left} ${-reveal}H${half}M${left} ${reveal}H${half}" stroke="${jamb}" stroke-width=".013" opacity=".8"/>
       <path d="M${left} ${-offset}H${half}M${left} ${offset}H${half}"
         stroke="${frame}" stroke-width=".02"/>
-      ${type === 'slidingWindow' ? `<path d="M 0 ${-offset} V ${offset} M ${left} 0 H .05 M -.05 ${offset * .55} H ${half}"
+      ${mullions ? `<path d="${mullions}" stroke="${frame}" stroke-width=".025"/>` : ''}
+      ${type === 'slidingWindow' ? `<path d="M ${left} 0 H .05 M -.05 ${offset * .55} H ${half}"
                               stroke="${frame}" stroke-width=".023"/>` : ''}`;
   }
 
   const pair = type === 'doubleDoor';
   const swing = pair ? half : width;
-  return `${cut}<path d="M${left} 0H${half}" stroke="${frame}" stroke-width=".016" stroke-dasharray=".06 .052"/>
+  const flip = !pair && item.opening?.handing === 'right';
+  return `${cut}<g${flip ? ' transform="scale(-1 1)"' : ''}><path d="M${left} 0H${half}" stroke="${frame}" stroke-width=".016" stroke-dasharray=".06 .052"/>
     <path d="M${left} 0V${-swing}${pair ? `M${half} 0V${-swing}` : ''}" stroke="${frame}" stroke-width=".032"/>
     <path d="M${left} ${-swing}a${swing} ${swing} 0 0 1 ${swing} ${swing}${pair ? `M${half} ${-swing}a${swing} ${swing} 0 0 0 ${-swing} ${swing}` : ''}"
       fill="none" stroke="${frame}" stroke-width=".016" stroke-opacity=".88"/>
-    <circle cx="${left}" r=".034" fill="${frame}"/>${pair ? `<circle cx="${half}" r=".034" fill="${frame}"/>` : ''}`;
+    <circle cx="${left}" r=".034" fill="${frame}"/>${pair ? `<circle cx="${half}" r=".034" fill="${frame}"/>` : ''}</g>`;
 }
 
 export function openingsIndex(items, isPortuguese) {

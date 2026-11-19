@@ -1,6 +1,6 @@
 import { formatNumber } from './core.js';
 import {
-  getWallSpec, openingVertical, wallAppearance, wallAssemblies, wallBaseOffset, wallFinishes, wallLayers, wallMeasurements,
+  getWallSpec, normalizeOpening, wallAppearance, wallAssemblies, wallBaseOffset, wallFinishes, wallLayers, wallMeasurements,
 } from './wall-spec.js';
 
 function toggle(label, key, active) {
@@ -82,10 +82,39 @@ export function renderWallInspector(wall, level, { locale, systemId, findWall })
   </div>`;
 }
 
-export function renderOpeningFields(item, locale) {
-  const { sill, top } = openingVertical(item);
+export function renderOpeningFields(item, locale, host) {
+  const { sill, height, leaves, handing, frameColor } = normalizeOpening(item.opening ?? {}, item.type);
   const pt = locale === 'pt-PT';
-  return `<div class="cv-wall-grid">${numberField(pt ? 'Altura do vão' : 'Opening height', 'shape:openingHeight', top - sill, 'm', .1, 5, .01)}${numberField(pt ? 'Cota inferior' : 'Sill level', 'shape:openingSill', sill, 'm', -.5, 4, .01)}</div>`;
+  const t = (pt, en) => locale === 'pt-PT' ? pt : en;
+  const isWindow = ['window', 'slidingWindow'].includes(item.type);
+  const area = formatNumber(item.width * height, locale, 2);
+  const format = (value) => formatNumber(value, locale, 2);
+  const colors = {
+    '#f4f2eb': t('Branco', 'White'), '#c3c6c4': t('Alumínio', 'Aluminium'),
+    '#485458': t('Cinza escuro', 'Dark grey'), '#242c31': t('Antracite', 'Anthracite'),
+    '#8e5f40': t('Madeira', 'Timber'), '#48594c': t('Verde escuro', 'Dark green'),
+  };
+  const placement = host ? numberField(t('Centro desde o início da parede', 'Centre from wall start'),
+    'shape:openingOffset', host.ratio * host.length, 'm', item.width / 2, host.length - item.width / 2, .01) : '';
+  const selectField = (label, key, options) => `<label class="cv-field"><span>${label}</span><select data-field="shape:${key}">${options}</select></label>`;
+  return `<div class="cv-wall-inspector">
+    <dl class="cv-wall-totals"><div><dt>${t('Área do vão', 'Opening area')}</dt><dd>${area} m²</dd></div>
+      ${host ? `<div><dt>${t('Parede', 'Wall')}</dt><dd>${format(host.length)} m</dd></div>` : ''}</dl>
+    <div class="cv-wall-group"><h3>${t('Dimensões e posição', 'Size and position')}</h3>
+      <div class="cv-wall-grid">${numberField(t('Largura do vão', 'Opening width'), 'shape:width', item.width, 'm', .1, Math.min(20, host?.length ?? 20), .01)}
+      ${numberField(t('Altura do vão', 'Opening height'), 'shape:openingHeight', height, 'm', .1, 5, .01)}</div>
+      ${numberField(t('Cota inferior', 'Sill level'), 'shape:openingSill', sill, 'm', -.5, 4, .01)}${placement}
+      ${host ? `<button type="button" class="cv-button cv-subtle" data-action="structure-select:walls" data-id="${host.wall.id}">${t('Selecionar parede', 'Select wall')}</button>` : ''}
+    </div>
+    <div class="cv-wall-group"><h3>${t('Caixilharia', 'Frame')}</h3>
+      ${isWindow ? selectField(t('Folhas', 'Leaves'), 'openingLeaves', [1, 2, 3].map((value) => option(value, leaves ?? (item.type === 'slidingWindow' ? 2 : 1), value)).join('')) : ''}
+      ${['door', 'window'].includes(item.type) ? selectField(t('Dobradiças', 'Hinges'), 'openingHanding',
+        option('left', handing ?? 'left', t('Esquerda', 'Left')) + option('right', handing ?? 'left', t('Direita', 'Right'))) : ''}
+      ${selectField(t('Cor do aro', 'Frame colour'), 'openingFrameColor', option('', frameColor ?? '', t('Padrão', 'Default')) +
+        Object.entries(colors).map(([value, label]) => option(value, frameColor, label)).join('') +
+        (frameColor && !colors[frameColor] ? option(frameColor, frameColor, frameColor) : ''))}
+    </div>
+  </div>`;
 }
 
 // Keep focused fields and the inspector scroll position while updating derived measurements.

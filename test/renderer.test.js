@@ -4,6 +4,7 @@ import { elements, makeItem, makeLevel, makeProject, makeRoom, makeWall, modelFa
 import { generateServices, serviceSystems } from '../public/building-services.js';
 import { cameraFrame, compileScene, pickScene, projectVertex, renderScene } from '../public/model-renderer.js';
 import { createModelViewer } from '../public/model-viewer.js';
+import { structureFootprint } from '../public/structure-elements.js';
 
 const width = 256;
 const height = 192;
@@ -108,6 +109,99 @@ test('Translucent surfaces tint geometry in front of the opaque depth and respec
   assert.equal(render(horizontal('#d07030', 0, 0.5)), opaqueColor(solid.fill));
 });
 
+test('Picking looks through decorative shadows and respects glass and opaque occluders', () => {
+  const owner = { kind: 'items', id: 'window', levelId: 'storey' };
+  const pane = { ...horizontal('#52b9d3', 2, .42), owner };
+  const shadow = { ...horizontal('#303a32', 3, .42), pickThrough: true };
+  for (const projection of ['perspective', 'orthographic']) {
+    const pick = (faces) => {
+      const scene = compileScene(faces);
+      const frame = cameraFrame(scene, { ...camera, elevation: 90, projection }, width, height);
+      return pickScene(scene, frame, width / 2, height / 2);
+    };
+    assert.deepEqual(pick([shadow, pane, horizontal('#555555', 1)]), owner);
+    assert.equal(pick([shadow, pane, horizontal('#555555', 4)]), null);
+  }
+});
+
+test('A roof and ceiling are pickable as distinct elements and highlight only the selected storey', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const ground = project.levels[0];
+  const top = makeLevel('Attic');
+  for (const level of [ground, top]) {
+    level.rooms = [makeRoom('living', 0, 0, 8, 6)];
+    level.walls = [makeWall(0, 0, 8, 0, .24)];
+  }
+  project.levels.push(top);
+  top.roof = 'gable';
+  top.ceiling = true;
+  const looks = (selected) => modelFaces(project, ground.id, false, { scope: 'all', selected });
+  const key = (kind, level = top) => ({ kind, id: level.id, levelId: level.id });
+  const owned = (faces, kind) => faces.filter(({ owner }) => owner?.kind === kind).map(({ fill }) => fill);
+  const otherwise = looks();
+  const selected = looks(key('roof'));
+  assert.notDeepEqual(owned(otherwise, 'roof'), owned(selected, 'roof'));
+  assert.deepEqual(owned(otherwise, 'ceiling'), owned(selected, 'ceiling'));
+  assert.deepEqual(owned(otherwise, 'walls'), owned(selected, 'walls'));
+  const pick = (faces) => {
+    const scene = compileScene(faces);
+    const frame = cameraFrame(scene, { ...camera, elevation: 90 }, width, height);
+    return pickScene(scene, frame, ...projectVertex(frame, 4, 1, 0));
+  };
+  assert.deepEqual(pick(selected), key('roof'));
+  top.roof = 'none';
+  const ceiling = looks(key('ceiling'));
+  assert.deepEqual(pick(ceiling), key('ceiling'));
+  assert.notDeepEqual(owned(looks(), 'ceiling'), owned(ceiling, 'ceiling'));
+});
+
+test('Each roof accessory and strip foundation can be selected directly on the rendered model', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const level = project.levels[0];
+  const wall = makeWall(0, 0, 8, 0, .24);
+  level.rooms = [makeRoom('living', 0, 0, 8, 6)];
+  level.walls = [wall];
+  level.roof = 'gable';
+  level.structure = [
+    { id: 'sky', type: 'roofWindow', u: .25, v: .24, width: .78, height: 1.18 },
+    { id: 'stack', type: 'chimney', u: .7, v: .28, width: .35, height: .65 },
+    { id: 'gutter', type: 'gutter', edge: 'front', from: .5, to: .85, width: .2, depth: .12 },
+    { id: 'footing', type: 'foundation', wallId: wall.id, width: 1.4 },
+  ];
+  const faces = modelFaces(project, level.id, false);
+  const scene = compileScene(faces);
+  const frame = cameraFrame(scene, { ...camera, elevation: 90 }, width, height);
+  for (const item of level.structure) {
+    const { id } = item;
+    const owner = { kind: 'structure', id, levelId: level.id };
+    const polygon = structureFootprint(level, item);
+    const centre = (axis) => polygon.reduce((sum, point) => sum + point[axis], 0) / polygon.length;
+    const target = id === 'footing' ? [1.4, -.55, 0] : [centre(0), centre(1), 0];
+    assert.deepEqual(pickScene(scene, frame, ...projectVertex(frame, ...target)), owner);
+    const selected = modelFaces(project, level.id, false, { selected: owner });
+    assert.ok(faces.some((face, index) => face.owner?.id === id && face.fill !== selected[index].fill));
+    assert.ok(faces.every((face, index) => face.owner?.id === id || face.fill === selected[index].fill));
+  }
+});
+
+test('Window glazing remains separately selectable and follows frame and leaf options', () => {
+  const project = makeProject('blank', 'lsf', true);
+  const level = project.levels[0];
+  const wall = makeWall(0, 0, 8, 0, .24);
+  const window = makeItem('window', 4, 0);
+  window.opening = { sill: .9, height: 1.2, frameColor: '#334455', leaves: 3 };
+  level.walls.push(wall);
+  level.items.push(window);
+  const faces = modelFaces(project, level.id, false);
+  const windowFaces = () => faces.filter(({ owner }) => owner.id === window.id);
+  assert.equal(windowFaces().filter(({ fill }) => fill === '#334455').length, 6);
+  const scene = compileScene(faces);
+  const frame = cameraFrame(scene, { ...camera, elevation: 0 }, width, height);
+  assert.deepEqual(pickScene(scene, frame, ...projectVertex(frame, 4, 0, 1.5)), { kind: 'items', id: window.id, levelId: level.id });
+  const selected = modelFaces(project, level.id, false, { selected: { kind: 'items', id: window.id } });
+  assert.ok(selected.some(({ owner, opacity }) => owner.id === window.id && opacity === .78));
+});
+
 test('The same frame buffers can render a smaller scene without leaving pixels behind', () => {
   const floor = compileScene([horizontal('#2070b0', 1)]);
   const tiny = compileScene([{ ...horizontal('#d07030', 1), points: [[-.2, -.2, 1], [.2, -.2, 1], [.2, .2, 1], [-.2, .2, 1]] }]);
@@ -168,6 +262,69 @@ test('Dragging the 3D model moves its near side in the same horizontal direction
   assert.equal(viewer.camera().azimuth, 0);
   assert.equal(viewer.camera().panX, 40 / width);
   assert.equal(viewer.camera().panY, 10 / height);
+});
+
+test('A click picks the displayed frame while drag, pinch and cancellation leave selection alone', (t) => {
+  const keys = ['window', 'document', 'requestAnimationFrame'];
+  const previous = keys.map((key) => Object.getOwnPropertyDescriptor(globalThis, key));
+  t.after(() => keys.forEach((key, index) => {
+    if (previous[index]) Object.defineProperty(globalThis, key, previous[index]);
+    else delete globalThis[key];
+  }));
+  globalThis.window = { devicePixelRatio: 2 };
+  globalThis.document = { createElement: () => ({ getContext: () => null }) };
+  let draw;
+  globalThis.requestAnimationFrame = (callback) => { draw = callback; return 1; };
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const canvas = Object.assign(new EventTarget(), {
+    dataset: {}, isConnected: true, focus() {}, setPointerCapture() {},
+    getBoundingClientRect: () => ({ left: 120, top: 60, width, height }),
+    getContext: () => ({ createImageData: (width, height) => ({ width, height, data: new Uint8Array(width * height * 4) }), putImageData() {} }),
+  });
+  const hits = [];
+  const owner = { kind: 'roof', id: 'top', levelId: 'top' };
+  let scene = compileScene([{ ...horizontal('#2070b0', 1), owner }]);
+  let pan = false;
+  const viewer = createModelViewer({ canvas, signal: controller.signal, scene: () => scene,
+    onCamera() {}, onEmpty() {}, onPick: (hit) => hits.push(hit), pan: () => pan });
+  const pointer = (type, dx, dy, extra) => canvas.dispatchEvent(Object.assign(new Event(type), {
+    pointerId: 1, button: 0, shiftKey: false, clientX: 120 + width / 2 + dx, clientY: 60 + height / 2 + dy, ...extra,
+  }));
+  viewer.paint();
+  draw();
+  scene = compileScene([]);
+  viewer.paint();
+
+  pointer('pointerdown', 0, 0, { pointerType: 'touch' });
+  pointer('pointermove', 7, 0, { pointerType: 'touch' });
+  pointer('pointerup', 7, 0, { pointerType: 'touch' });
+  assert.deepEqual(hits, [owner]);
+
+  pointer('pointerdown', 0, 0);
+  pointer('pointermove', 16, 0);
+  pointer('pointerup', 0, 0);
+  pointer('pointerdown', 0, 0);
+  pointer('pointerdown', 14, 0, { pointerId: 2 });
+  pointer('pointerup', 14, 0, { pointerId: 2 });
+  pointer('pointerup', 0, 0);
+  pointer('pointerdown', 0, 0);
+  pointer('pointercancel', 0, 0);
+  assert.deepEqual(hits, [owner]);
+  pan = true;
+  const beforePan = viewer.camera();
+  pointer('pointerdown', 0, 0);
+  pointer('pointermove', 12, 9);
+  pointer('pointerup', 12, 9);
+  assert.deepEqual(hits, [owner]);
+  assert.ok(Math.abs(viewer.camera().azimuth - beforePan.azimuth) < 1e-9);
+  assert.equal(viewer.camera().panX, beforePan.panX + 12 / width);
+  assert.equal(viewer.camera().panY, beforePan.panY + 9 / height);
+  pan = false;
+  draw();
+  pointer('pointerdown', 0, 0);
+  pointer('pointerup', 0, 0);
+  assert.deepEqual(hits, [owner, null]);
 });
 
 test('The 3D installation layer uses chosen systems, storey heights, and pickable typed owners', () => {

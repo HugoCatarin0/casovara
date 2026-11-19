@@ -11,7 +11,7 @@ export function compileScene(faces) {
   const translucent = [];
   const low = [Infinity, Infinity, Infinity];
   const high = [-Infinity, -Infinity, -Infinity];
-  for (const { points, fill, opacity = 1, owner = null } of faces) {
+  for (const { points, fill, opacity = 1, owner = null, pickThrough = false } of faces) {
     if (points.length < 3 || opacity <= 0) continue;
     const target = opacity >= 1 ? opaque : translucent;
     const color = packedColor(fill, Math.min(opacity, 1));
@@ -22,7 +22,7 @@ export function compileScene(faces) {
       }
     }
     for (let index = 1; index < points.length - 1; index++) {
-      target.push({ points: [points[0], points[index], points[index + 1]], color, owner });
+      target.push({ points: [points[0], points[index], points[index + 1]], color, owner, pickThrough });
     }
   }
   const empty = !opaque.length && !translucent.length;
@@ -69,18 +69,23 @@ export function projectVertex(frame, x, y, z) {
 }
 
 export function pickScene(scene, frame, x, y) {
+  if (x < 0 || y < 0 || x >= frame.width || y >= frame.height) return null;
   let depth = -Infinity;
   let owner = null;
   for (const layer of [scene.opaque, scene.translucent]) {
     for (const triangle of layer) {
-      const [[ax, ay, az], [bx, by, bz], [cx, cy, cz]] = triangle.points.map(([x, y, z]) => projectVertex(frame, x, y, z));
+      if (triangle.pickThrough) continue;
+      const [a, b, c] = triangle.points;
+      const [ax, ay, az] = projectVertex(frame, ...a);
+      const [bx, by, bz] = projectVertex(frame, ...b);
+      const [cx, cy, cz] = projectVertex(frame, ...c);
       const abx = bx - ax, aby = by - ay;
       const acx = cx - ax, acy = cy - ay;
       const area = abx * acy - aby * acx;
       if (Math.abs(area) < .000001) continue;
       const u = ((x - ax) * acy - (y - ay) * acx) / area;
       const v = ((y - ay) * abx - (x - ax) * aby) / area;
-      if (u < 0 || v < 0 || u + v > 1) continue;
+      if (u < -.000001 || v < -.000001 || u + v > 1.000001) continue;
       const z = az + (bz - az) * u + (cz - az) * v;
       if (z > depth + .000001) {
         depth = z;
@@ -280,7 +285,7 @@ export function createModelRenderer(canvas, { preferSoftware = false } = {}) {
       canvas.height = height;
     }
     const frame = cameraFrame(scene, camera, width, height);
-    if (gpu?.paint(scene, frame, context)) return;
+    if (gpu?.paint(scene, frame, context)) return frame;
     if (image?.width !== width || image?.height !== height) {
       image = context.createImageData(width, height);
       const size = width * height;
@@ -291,6 +296,7 @@ export function createModelRenderer(canvas, { preferSoftware = false } = {}) {
     }
     renderScene(scene, frame, buffers);
     context.putImageData(image, 0, 0);
+    return frame;
   }
 
   return { paint, dispose: () => gpu?.dispose() };
